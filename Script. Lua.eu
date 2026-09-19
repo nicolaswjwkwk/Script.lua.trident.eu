@@ -28,12 +28,43 @@ local window = Rayfield:CreateWindow({
     name = "SwimHub",
     subtitle = "PC / Mobile",
     sidebarLayout = true,
-    configurationSaving = {
-        enabled = true,
-        folderName = "SwimHub",
+    configuration = {
+        autoSave = true,
+        autoLoad = true,
         fileName = "Config",
+        customFolder = "SwimHub",
     },
 })
+
+-- Contador de elementos (diagnأ³stico: aparece num Notify no final).
+local UI_CREATED = { count = 0 }
+local function uiBump()
+    UI_CREATED.count = UI_CREATED.count + 1
+end
+
+-- Tenta chamar um mأ©todo da tab sem nunca quebrar o script.
+local function safeTabCreate(tab, methodNames, props)
+    if not tab then return nil end
+    for _, m in ipairs(methodNames) do
+        local fn = tab[m]
+        if type(fn) == "function" then
+            local ok, res = pcall(fn, tab, props)
+            if ok and res ~= nil then
+                uiBump()
+                return res
+            end
+        end
+    end
+    return nil
+end
+
+-- Cria seأ§أ£o de forma segura (Gen2 espera tabela {name=...}, nأ£o string).
+local function safeSection(tab, text)
+    if not tab then return end
+    if type(tab.CreateSection) == "function" then
+        pcall(tab.CreateSection, tab, { name = tostring(text) })
+    end
+end
 
 -- Compatibility layer: keeps the original feature code working while replacing
 -- the old custom UI library with Rayfield Gen2.
@@ -64,8 +95,9 @@ local function makeHandle(element, kind)
     function handle:AddColorPicker(id, opts)
         opts = opts or {}
         local parent = self._tab
-        if parent and parent.CreateColorPicker then
-            parent:CreateColorPicker({
+        if parent and type(parent.CreateColorPicker) == "function" then
+            -- Gen2: {name, color, alpha, flag, callback(color, alpha)}
+            pcall(parent.CreateColorPicker, parent, {
                 name = opts.Title or opts.Name or id,
                 color = opts.Default or Color3.new(1, 1, 1),
                 flag = id,
@@ -73,6 +105,7 @@ local function makeHandle(element, kind)
                     if opts.Callback then opts.Callback(value) end
                 end,
             })
+            uiBump()
         end
         return self
     end
@@ -80,11 +113,14 @@ local function makeHandle(element, kind)
     function handle:AddKeyPicker(id, opts)
         opts = opts or {}
         local parent = self._tab
-        if parent and parent.CreateKeybind then
-            parent:CreateKeybind({
+        if parent and type(parent.CreateKeybind) == "function" then
+            -- Gen2: {name, value, hold, flag, callback} ("None" vira nil)
+            local init = opts.Default
+            if init == "None" then init = nil end
+            pcall(parent.CreateKeybind, parent, {
                 name = opts.Text or opts.Name or id,
-                currentKeybind = opts.Default or "None",
-                holdToInteract = (opts.Mode == "Hold"),
+                value = init,
+                hold = (opts.Mode == "Hold"),
                 flag = id,
                 callback = function()
                     if self._element and self._element.Set then
@@ -94,6 +130,7 @@ local function makeHandle(element, kind)
                     end
                 end,
             })
+            uiBump()
         end
         return self
     end
@@ -107,15 +144,20 @@ local function makeTabAdapter(tab)
     function adapter:AddToggle(id, opts)
         opts = opts or {}
         local handle
-        handle = makeHandle(tab:CreateToggle({
+        -- Gen2 usa `value`, nأ£o `currentValue`.
+        local el = safeTabCreate(tab, { "CreateToggle", "CreateSwitch" }, {
             name = opts.Text or opts.Name or id,
-            currentValue = opts.Default == true,
+            value = opts.Default == true,
             flag = id,
             callback = function(value)
-                handle._value = value
+                if handle then
+                    handle._value = value
+                    if handle._changed then handle._changed(value) end
+                end
                 if opts.Callback then opts.Callback(value) end
             end,
-        }), "toggle")
+        })
+        handle = makeHandle(el, "toggle")
         handle._tab = tab
         handle._value = opts.Default == true
         return handle
@@ -126,18 +168,23 @@ local function makeTabAdapter(tab)
         local handle
         local rounding = tonumber(opts.Rounding) or 0
         local increment = rounding > 0 and (10 ^ -rounding) or 1
-        handle = makeHandle(tab:CreateSlider({
+        -- Gen2 usa `value`, nأ£o `currentValue`.
+        local el = safeTabCreate(tab, { "CreateSlider" }, {
             name = opts.Text or opts.Name or id,
             range = {opts.Min or 0, opts.Max or 100},
             increment = increment,
-            currentValue = opts.Default or opts.Min or 0,
+            value = opts.Default or opts.Min or 0,
             suffix = opts.Suffix or "",
             flag = id,
             callback = function(value)
-                handle._value = value
-                if handle._changed then handle._changed(value) end
+                if handle then
+                    handle._value = value
+                    if handle._changed then handle._changed(value) end
+                end
+                if opts.Callback then opts.Callback(value) end
             end,
-        }), "slider")
+        })
+        handle = makeHandle(el, "slider")
         handle._tab = tab
         handle._value = opts.Default or opts.Min or 0
         return handle
@@ -155,47 +202,64 @@ local function makeTabAdapter(tab)
             current = {}
         end
         local handle
-        handle = makeHandle(tab:CreateDropdown({
+        -- Gen2: `value` + `multiSelect` (nomes antigos `currentOption` /
+        -- `multipleOptions` sأ£o ignorados e o dropdown nasce vazio).
+        local isMulti = opts.Multi == true
+        local el = safeTabCreate(tab, { "CreateDropdown" }, {
             name = opts.Text or opts.Name or id,
             options = values,
-            currentOption = current,
-            multipleOptions = opts.Multi == true,
+            value = current,
+            multiSelect = isMulti,
             flag = id,
             callback = function(value)
-                handle._value = value
+                if handle then
+                    handle._value = value
+                    if handle._changed then handle._changed(value) end
+                end
                 if opts.Callback then opts.Callback(value) end
             end,
-        }), "dropdown")
+        })
+        handle = makeHandle(el, "dropdown")
         handle._tab = tab
         handle._value = current
         return handle
     end
 
     function adapter:AddLabel(text)
-        tab:CreateLabel({text = tostring(text)})
+        -- Gen2 NأƒO tem CreateLabel: o elemento de texto أ© CreateText.
+        local el = safeTabCreate(tab, { "CreateText", "CreateLabel", "CreateParagraph" }, {
+            name = tostring(text),
+            text = "",
+        })
+        if el == nil then
+            safeSection(tab, text)
+        end
         local label = {}
         function label:AddColorPicker(id, opts)
             opts = opts or {}
-            tab:CreateColorPicker({
-                name = opts.Title or id,
-                color = opts.Default or Color3.new(1, 1, 1),
-                flag = id,
-                callback = function(value)
-                    if opts.Callback then opts.Callback(value) end
-                end,
-            })
+            if type(tab.CreateColorPicker) == "function" then
+                pcall(tab.CreateColorPicker, tab, {
+                    name = opts.Title or id,
+                    color = opts.Default or Color3.new(1, 1, 1),
+                    flag = id,
+                    callback = function(value)
+                        if opts.Callback then opts.Callback(value) end
+                    end,
+                })
+                uiBump()
+            end
             return label
         end
         return label
     end
 
     function adapter:AddSection(text)
-        if tab.CreateSection then tab:CreateSection(tostring(text)) end
+        safeSection(tab, text)
         return adapter
     end
 
     function adapter:AddTab(name)
-        if tab.CreateSection then tab:CreateSection(tostring(name)) end
+        safeSection(tab, name)
         return adapter
     end
 
@@ -205,7 +269,7 @@ end
 local function makeBox(tab)
     return {
         AddTab = function(self, name)
-            if tab.CreateSection then tab:CreateSection(tostring(name)) end
+            safeSection(tab, name)
             return makeTabAdapter(tab)
         end
     }
@@ -2100,11 +2164,33 @@ ui.box.themeconfig:AddToggle("keybindshoww", {
     end
 })
 
-ui.box.themeconfig:AddLabel("Rayfield Gen2 • PC / Mobile")
+ui.box.themeconfig:AddLabel("Rayfield Gen2 â€¢ PC / Mobile")
 ui.box.themeconfig:AddLabel("Use the search, tabs and built-in settings controls.")
 
 pcall(function()
-    Rayfield:LoadConfiguration()
+    -- API Gen2: saving via window (a chamada antiga Rayfield:LoadConfiguration nأ£o existe).
+    if window.Load then window:Load() end
+end)
+
+-- Garante que a janela abre visأ­vel na primeira aba.
+pcall(function()
+    if window.Navigate then
+        window:Navigate("Combat")
+    elseif ui.tabs.combat and ui.tabs.combat.Select then
+        ui.tabs.combat:Select()
+    end
+end)
+pcall(function()
+    if window.Show then window:Show() end
 end)
 
 cheat.EspLibrary.load()
+
+-- ًں’œًںڑ€ًں’œ Notificaأ§أ£o de sucesso (com contador de elementos da UI)
+pcall(function()
+    window:Notify({
+        title = "SwimHub ًں’🚀💜🚀",
+        content = ("Funcionando! ًں’œًںڑ👾👾€ًں’œ (%d elementos)"):format(UI_CREATED.count),
+    })
+end)
+warn(("[SwimHub] ًں’œً💯ںڑ€ًں’œ elementos criados: %d"):format(UI_CREATED.count))
