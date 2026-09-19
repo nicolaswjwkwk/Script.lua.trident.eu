@@ -21,10 +21,10 @@ local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 local Camera = workspace.CurrentCamera
 
--- Rayfield Gen2 UI
+-- Rayfield Gen2 UI (direto, sem adapter)
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
-local window = Rayfield:CreateWindow({
+local Window = Rayfield:CreateWindow({
     name = "SwimHub",
     subtitle = "PC / Mobile",
     sidebarLayout = true,
@@ -36,286 +36,230 @@ local window = Rayfield:CreateWindow({
     },
 })
 
--- Contador de elementos (diagnأ³stico: aparece num Notify no final).
+-- Tabs principais
+local CombatTab = Window:CreateTab({name = "Combat"})
+local VisualsTab = Window:CreateTab({name = "Visuals"})
+local MiscTab = Window:CreateTab({name = "Misc"})
+local ConfigTab = Window:CreateTab({name = "Config"})
+
+-- ===== COMBAT =====
+local AimbotSection = CombatTab:CreateSection({name = "Aimbot"})
+local HitboxSection = CombatTab:CreateSection({name = "Hitbox"})
+
+-- ===== VISUALS =====
+local PlayerESPSection = VisualsTab:CreateSection({name = "Player ESP"})
+local ObjectESPSection = VisualsTab:CreateSection({name = "Object ESP"})
+local CheatVisualsSection = VisualsTab:CreateSection({name = "Cheat Visuals"})
+local WorldVisualsSection = VisualsTab:CreateSection({name = "World Visuals"})
+local CrosshairSection = VisualsTab:CreateSection({name = "Crosshair"})
+
+-- ===== MISC =====
+local MovementSection = MiscTab:CreateSection({name = "Movement"})
+local ExploitsSection = MiscTab:CreateSection({name = "Exploits"})
+local ATVFlySection = MiscTab:CreateSection({name = "ATV Fly"})
+local MiscSection = MiscTab:CreateSection({name = "Misc"})
+local ChatSection = MiscTab:CreateSection({name = "Chat"})
+
+-- ===== CONFIG =====
+local ThemeSection = ConfigTab:CreateSection({name = "Interface"})
+
+-- Contador de elementos (diagnأ³stico)
 local UI_CREATED = { count = 0 }
 local function uiBump()
     UI_CREATED.count = UI_CREATED.count + 1
 end
 
--- Tenta chamar um mأ©todo da tab/section sem nunca quebrar o script.
-local function safeCreate(obj, methodNames, props)
-    if not obj then return nil end
-    for _, m in ipairs(methodNames) do
-        local fn = obj[m]
-        if type(fn) == "function" then
-            local ok, res = pcall(fn, obj, props)
-            if ok and res ~= nil then
-                uiBump()
-                return res
-            end
-        end
-    end
-    warn(("[SwimHub] elemento nأ£o criado: %s"):format(tostring(props and (props.name or props.Name) or "?")))
-    return nil
-end
-
--- Compatibility layer: keeps the original feature code working while replacing
--- the old custom UI library with Rayfield Gen2.
-local function makeHandle(element, kind)
-    local handle = {
-        _element = element,
-        _changed = nil,
-        _value = nil,
-        _kind = kind,
-    }
-
-    function handle:OnChanged(callback)
-        self._changed = callback
-        return self
-    end
-
-    function handle:Set(value)
-        self._value = value
-        if self._element and self._element.Set then
-            pcall(self._element.Set, self._element, value)
-        end
-        if self._changed then
-            self._changed(value)
-        end
-        return self
-    end
-
-    function handle:Get()
-        return self._value
-    end
-
-    function handle:AddColorPicker(id, opts)
-        opts = opts or {}
-        -- Tenta na tab (CreateColorPicker)
-        safeCreate(self._tab, { "CreateColorPicker" }, {
-            name = opts.Title or opts.Name or id,
-            color = opts.Default or Color3.new(1, 1, 1),
-            flag = id,
-            callback = function(value)
-                if opts.Callback then opts.Callback(value) end
-            end,
-        })
-        return self
-    end
-
-    function handle:AddKeyPicker(id, opts)
-        opts = opts or {}
-        -- Gen2: {name, value, hold, flag, callback}
-        safeCreate(self._tab, { "CreateKeybind", "CreateKeyPicker" }, {
-            name = opts.Text or opts.Name or id,
-            value = opts.Default or "None",
-            hold = opts.Mode == "Hold",
-            flag = id,
-            callback = function()
-                if self._element and self._element.Set then
-                    local current = self._value == true
-                    self._value = not current
-                    pcall(self._element.Set, self._element, not current)
-                end
-            end,
-        })
-        return self
-    end
-
-    return handle
-end
-
-local function makeTabAdapter(tab)
-    local adapter = {}
-
-    function adapter:AddToggle(id, opts)
-        opts = opts or {}
-        local handle
-        -- Gen2 usa `value`, nأ£o `currentValue`.
-        local el = safeCreate(tab, { "CreateToggle", "CreateSwitch" }, {
-            name = opts.Text or opts.Name or id,
-            value = opts.Default == true,
-            flag = id,
-            callback = function(value)
-                if handle then
-                    handle._value = value
-                    if handle._changed then handle._changed(value) end
-                end
-                if opts.Callback then opts.Callback(value) end
-            end,
-        })
-        handle = makeHandle(el, "toggle")
-        handle._tab = tab
-        handle._value = opts.Default == true
-        return handle
-    end
-
-    function adapter:AddSlider(id, opts)
-        opts = opts or {}
-        local handle
-        local rounding = tonumber(opts.Rounding) or 0
-        local increment = rounding > 0 and (10 ^ -rounding) or 1
-        -- Gen2 usa `value`, nأ£o `currentValue`.
-        local el = safeCreate(tab, { "CreateSlider" }, {
-            name = opts.Text or opts.Name or id,
-            range = {opts.Min or 0, opts.Max or 100},
-            increment = increment,
-            value = opts.Default or opts.Min or 0,
-            suffix = opts.Suffix or "",
-            flag = id,
-            callback = function(value)
-                if handle then
-                    handle._value = value
-                    if handle._changed then handle._changed(value) end
-                end
-                if opts.Callback then opts.Callback(value) end
-            end,
-        })
-        handle = makeHandle(el, "slider")
-        handle._tab = tab
-        handle._value = opts.Default or opts.Min or 0
-        return handle
-    end
-
-    function adapter:AddDropdown(id, opts)
-        opts = opts or {}
-        local values = opts.Values or {}
-        local current = opts.Default
-        if type(current) == "number" then
-            current = values[current] and {values[current]} or {}
-        elseif type(current) == "string" then
-            current = {current}
-        elseif type(current) ~= "table" then
-            current = {}
-        end
-        local handle
-        -- Gen2: `value` + `multiSelect` (nomes antigos `currentOption` /
-        -- `multipleOptions` sأ£o ignorados e o dropdown nasce vazio).
-        local isMulti = opts.Multi == true
-        local el = safeTabCreate(tab, { "CreateDropdown" }, {
-            name = opts.Text or opts.Name or id,
-            options = values,
-            -- Gen2 modo simples espera string, nأ£o tabela.
-            value = isMulti and current or current[1],
-            multiSelect = isMulti,
-            flag = id,
-            callback = function(value)
-                if handle then
-                    handle._value = value
-                    if handle._changed then handle._changed(value) end
-                end
-                if opts.Callback then opts.Callback(value) end
-            end,
-        })
-        handle = makeHandle(el, "dropdown")
-        handle._tab = tab
-        handle._value = current
-        return handle
-    end
-
-    function adapter:AddLabel(text)
-        -- Gen2 NأƒO tem CreateLabel: o elemento de texto أ© CreateText.
-        local el = safeCreate(tab, { "CreateText", "CreateLabel", "CreateParagraph" }, {
-            name = tostring(text),
-            text = "",
-        })
-        if el == nil then
-            safeSection(tab, text)
-        end
-        local label = {}
-        function label:AddColorPicker(id, opts)
-            opts = opts or {}
-            safeCreate(tab, { "CreateColorPicker" }, {
-                name = opts.Title or id,
-                color = opts.Default or Color3.new(1, 1, 1),
-                flag = id,
-                callback = function(value)
-                    if opts.Callback then opts.Callback(value) end
-                end,
-            })
-            return label
-        end
-        return label
-    end
-
-    function adapter:AddSection(text)
-        safeSection(tab, text)
-        return adapter
-    end
-
-    function adapter:AddTab(name)
-        safeSection(tab, name)
-        return adapter
-    end
-
-    function adapter:AddButton(id, opts)
-        opts = opts or {}
-        safeCreate(tab, { "CreateButton" }, {
-            name = opts.Text or opts.Name or id,
-            callback = function()
-                if opts.Callback then opts.Callback() end
-            end,
-        })
-        return { _tab = tab }
-    end
-
-    return adapter
-end
-
-local function makeBox(tab)
-    return {
-        AddTab = function(self, name)
-            safeSection(tab, name)
-            return makeTabAdapter(tab)
-        end
-    }
-end
-
-local ui = {
-    window = window,
-    tabs = {},
-    box = {},
-}
-
-ui.tabs.combat = window:CreateTab({name = "Combat"})
-ui.tabs.visuals = window:CreateTab({name = "Visuals"})
-ui.tabs.misc = window:CreateTab({name = "Misc"})
-ui.tabs.config = window:CreateTab({name = "Config"})
-
-ui.box.aimbot = makeBox(ui.tabs.combat)
-ui.box.esp = makeBox(ui.tabs.visuals)
-ui.box.cheatvis = makeBox(ui.tabs.visuals)
-ui.box.world = makeBox(ui.tabs.visuals)
-ui.box.move = makeBox(ui.tabs.misc)
-ui.box.atvfly = makeBox(ui.tabs.misc)
-ui.box.misc = makeBox(ui.tabs.misc)
-ui.box.themeconfig = makeTabAdapter(ui.tabs.config)
-
--- Diagnأ³stico visأ­vel: 1 toggle NATIVO direto no tab (sem adapter).
--- Se nem ele aparecer, o problema estأ، no tab/window e nأ£o nos elementos.
-UI_DIAG = { smoke = false, smokeErr = "nأ£o executado", tabType = "?" }
+-- Diagnأ³stico: smoke test nativo
+local UI_DIAG = { smoke = false, smokeErr = "nأ£o executado", tabType = "?" }
 do
-    local ctab = ui.tabs and ui.tabs.combat
-    UI_DIAG.tabType = type(ctab)
-    local fn = (type(ctab) == "table" and ctab.CreateToggle) or nil
-    if type(fn) == "function" then
-        local okSmk, resSmk = pcall(fn, ctab, {
+    local okSmk, resSmk = pcall(function()
+        return CombatTab:CreateToggle({
             name = "Interface OK ًں’œ",
             value = true,
             flag = "__swimhub_smoke",
             callback = function() end,
         })
-        if okSmk and resSmk ~= nil then
-            UI_DIAG.smoke = true
-            UI_DIAG.smokeErr = "criado"
-            uiBump()
-        else
-            UI_DIAG.smokeErr = tostring(resSmk)
+    end)
+    if okSmk and resSmk ~= nil then
+        UI_DIAG.smoke = true
+        UI_DIAG.smokeErr = "criado"
+        uiBump()
+    else
+        UI_DIAG.smokeErr = tostring(resSmk)
+    end
+    UI_DIAG.tabType = type(CombatTab)
+end
+
+-- ============================================================
+-- cheat table (compatibility layer for original feature code)
+-- ============================================================
+local cheat = {
+    Library = nil,
+    Toggles = nil,
+    Options = nil,
+    ThemeManager = nil,
+    SaveManager = nil,
+    connections = {
+        heartbeats = {},
+        renderstepped = {}
+    },
+    drawings = {},
+    hooks = {}
+}
+
+-- Asset loading (from original eu.Lua)
+local function getfile(name)
+    local repo = "https://raw.githubusercontent.com/SWIMHUBISWIMMING/swimhub/main/"
+    local success, content = pcall(game.HttpGet, game, repo .. name)
+    if success then return content else return print("getfile returned error \"" .. content .. "\"") end
+end
+local function isswimhubfile(file)
+    return isfile("swimhub/new/files/" .. file)
+end
+local function readswimhubfile(file)
+    if not isswimhubfile(file) then return false end
+    local success, returns = pcall(readfile, "swimhub/new/files/" .. file)
+    if success then return returns else return print(returns) end
+end
+local function loadswimhubfile(file)
+    if not isswimhubfile(file) then return false end
+    local success, returns = pcall(loadstring, readswimhubfile(file))
+    if success then return returns else return print(returns) end
+end
+local function getswimhubasset(file)
+    if not isswimhubfile(file) then return false end
+    local success, returns = pcall(getcustomasset, "swimhub/new/files/" .. file)
+    if success then return returns else return print(returns) end
+end
+
+do
+    if not isfolder("swimhub") then makefolder("swimhub") end
+    if not isfolder("swimhub/new") then makefolder("swimhub/new") end
+    if not isfolder("swimhub/new/files") then makefolder("swimhub/new/files") end
+    local function getfiles(force, list)
+        for _, file in ipairs(list or {}) do
+            if (force or (not force and not isswimhubfile(file))) then
+                writefile("swimhub/new/files/" .. file, getfile(file))
+            end
+        end
+    end
+    local gotassets = getfile("assets.json")
+    local assets = HttpService:JSONDecode(gotassets)
+    local localassets = readswimhubfile("assets.json")
+    if localassets then
+        localassets = HttpService:JSONDecode(localassets)
+        if localassets.version ~= assets.version then
+            writefile("swimhub/new/files/assets.json", gotassets)
+            getfiles(true, assets.list)
         end
     else
-        UI_DIAG.smokeErr = "tab sem CreateToggle"
+        writefile("swimhub/new/files/assets.json", gotassets)
+    end
+    getfiles(false, assets.list)
+end
+
+cheat.utility = {} do
+    cheat.utility.new_heartbeat = function(func)
+        local obj = {}
+        cheat.connections.heartbeats[func] = func
+        function obj:Disconnect()
+            if func then
+                cheat.connections.heartbeats[func] = nil
+                func = nil
+            end
+        end
+        return obj
+    end
+    cheat.utility.new_renderstepped = function(func)
+        local obj = {}
+        cheat.connections.renderstepped[func] = func
+        function obj:Disconnect()
+            if func then
+                cheat.connections.renderstepped[func] = nil
+                func = nil
+            end
+        end
+        return obj
+    end
+    cheat.utility.new_drawing = function(drawobj, args)
+        local obj = Drawing.new(drawobj)
+        for i, v in pairs(args) do
+            obj[i] = v
+        end
+        cheat.drawings[obj] = obj
+        return obj
+    end
+    cheat.utility.new_hook = function(f, newf, usecclosure)
+        if usecclosure then
+            local old; old = hookfunction(f, newcclosure(function(...)
+                return newf(old, ...)
+            end))
+            cheat.hooks[f] = old
+            return old
+        else
+            local old; old = hookfunction(f, function(...)
+                return newf(old, ...)
+            end)
+            cheat.hooks[f] = old
+            return old
+        end
+    end
+    local connection = RunService.Heartbeat:Connect(LPH_NO_VIRTUALIZE(function(delta)
+        for _, func in pairs(cheat.connections.heartbeats) do
+            func(delta)
+        end
+    end))
+    local connection1 = RunService.RenderStepped:Connect(LPH_NO_VIRTUALIZE(function(delta)
+        for _, func in pairs(cheat.connections.renderstepped) do
+            func(delta)
+        end
+    end))
+    cheat.utility.unload = function()
+        connection:Disconnect()
+        connection1:Disconnect()
+        for key, _ in pairs(cheat.connections.heartbeats) do
+            cheat.connections.heartbeats[key] = nil
+        end
+        for key, _ in pairs(cheat.connections.renderstepped) do
+            cheat.connections.renderstepped[key] = nil
+        end
+        for _, drawing in pairs(cheat.drawings) do
+            drawing:Remove()
+            cheat.drawings[_] = nil
+        end
+        for hooked, original in pairs(cheat.hooks) do
+            if type(original) == "function" then
+                hookfunction(hooked, clonefunction(original))
+            else
+                hookmetamethod(original["instance"], original["metamethod"], clonefunction(original["func"]))
+            end
+        end
     end
 end
+
+-- Rayfield replaces the old custom UI library; provide minimal shims so
+-- the rest of the script (cheat.Library, cheat.ThemeManager, cheat.SaveManager)
+-- can be used without the old library_main / library_theme / library_save.
+cheat.Library = window
+cheat.Toggles = {}
+cheat.Options = {}
+cheat.ThemeManager = (function()
+    local m = {}
+    function m:SetLibrary(lib) end
+    function m:SetFolder(folder) end
+    function m:SetOptionsTEMP(opts, toggles) end
+    function m:ApplyToGroupbox(groupbox) end
+    return m
+end)()
+cheat.SaveManager = (function()
+    local m = {}
+    function m:SetLibrary(lib) end
+    function m:SetFolder(folder) end
+    function m:SetOptionsTEMP(opts, toggles) end
+    function m:IgnoreThemeSettings() end
+    function m:BuildConfigSection(tab) end
+    return m
+end)()
 
 local _CFramenew = CFrame.new
 local _Vector2new = Vector2.new
@@ -995,7 +939,7 @@ do
     workspace.ChildAdded:Connect(addtovc);
     workspace.ChildRemoved:Connect(removefromvc);
 
-    local hbb = ui.box.aimbot:AddTab("hitbox")
+    local hbb = HitboxSection
     hbb:AddToggle('hitbox_enabled', {
         Text = 'hitbox expander',
         Default = false,
@@ -1040,7 +984,7 @@ do
     end)
 end
 do
-    local espb = ui.box.esp:AddTab("player esp")
+    local espb = PlayerESPSection
     local es = cheat.EspLibrary.settings.enemy
     espb:AddSlider('espfontsize', { Text = 'esp font size', Default = 13, Min = 1, Max = 30, Rounding = 0, Compact = true }):OnChanged(function(State)
         cheat.EspLibrary.main_settings.textSize = State
@@ -1213,7 +1157,7 @@ do
     ----------------------------------------------------------
 end
 do
-    local espb = ui.box.esp:AddTab("object esp")
+    local espb = ObjectESPSection
     local es = cheat.EspLibrary.settings.object
     espb:AddDropdown('objectespfont', {Values = { 'UI', 'System', 'Plex', 'Monospace' },Default = 1,Multi = false,Text = 'esp font',Tooltip = 'select font',Callback = function(Value)
         cheat.EspLibrary.main_object_settings.textFont = Drawing.Fonts[Value]
@@ -1267,7 +1211,7 @@ end)
 do
     local enabled, dynamic = false, false;
     local color1, color2 = Color3.new(1,1,1), Color3.new();
-    local watermarktab = ui.box.cheatvis:AddTab("watermark")
+    local watermarktab = CheatVisualsSection
     local watermarktoggle = watermarktab:AddToggle('watermark_enabled', {Text = 'enabled',Default = false,Callback = function(first)
         enabled = first
     end})
@@ -1370,7 +1314,7 @@ do
 end
 
 do
-    local WorldTab = ui.box.world:AddTab("world visuals")
+    local WorldTab = WorldVisualsSection
     local time = 12
     local timechanger = false
     WorldTab:AddToggle('enabletimechanger', {Text = 'enable time changer',Default = false,Callback = function(first)
@@ -1409,7 +1353,7 @@ do
             LogoFadingOffset = 0,
         }
     }
-    local CrosshairTab = ui.box.world:AddTab("crosshair")
+    local CrosshairTab = CrosshairSection
     cursor.rainbow = false
     cursor.sussy = false
     CrosshairTab:AddToggle('crosshairenable', {Text = 'enable crosshair',Default = false,Callback = function(first)
@@ -1604,7 +1548,7 @@ do
 end
 
 do
-    local mvb = ui.box.move:AddTab('speedhack')
+    local mvb = MovementSection
     local bhop_enabled, speed = false, 55
     local forcesprint = false
     mvb:AddToggle('speedhack_forcesprint', {Text = 'forcesprint',Default = false,Callback = function(first)
@@ -1665,7 +1609,7 @@ do
 end
 
 do
-    local mvb = ui.box.move:AddTab("exploits")
+    local mvb = ExploitsSection
 
 local enabled = false
 local speed = 55
@@ -1816,7 +1760,7 @@ end))
 end
 
 do
-    local mvb = ui.box.atvfly:AddTab("atv fly")
+    local mvb = ATVFlySection
 
 local carfly_enabled = false
 local speed = 55
@@ -1975,7 +1919,7 @@ cheat.utility.new_renderstepped(
 end
 
 do
-    local chatTab = ui.box.misc:AddTab("Chat")
+    local chatTab = ChatSection
     local chatMessage = "Hello"
     local chatEnabled = false
     local chatInterval = 5
@@ -2010,17 +1954,18 @@ do
     end)
 end
 
-ui.box.themeconfig:AddSection("Interface")
-ui.box.themeconfig:AddToggle("keybindshoww", {
-    Text = "show keybinds",
-    Default = false,
+ThemeSection:CreateSection({name = "Interface"})
+ThemeSection:CreateToggle({
+    Name = "show keybinds",
+    CurrentValue = false,
+    Flag = "keybindshoww",
     Callback = function(first)
         -- Rayfield Gen2 handles its own mobile/desktop controls.
     end
 })
 
-ui.box.themeconfig:AddLabel("Rayfield Gen2 â€¢ PC / Mobile")
-ui.box.themeconfig:AddLabel("Use the search, tabs and built-in settings controls.")
+ThemeSection:CreateLabel({Text = "Rayfield Gen2 â€¢ PC / Mobile"})
+ThemeSection:CreateLabel({Text = "Use the search, tabs and built-in settings controls."})
 
 pcall(function()
     -- API Gen2: saving via window (a chamada antiga Rayfield:LoadConfiguration nأ£o existe).
