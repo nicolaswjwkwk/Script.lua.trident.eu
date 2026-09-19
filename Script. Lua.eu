@@ -42,28 +42,21 @@ local function uiBump()
     UI_CREATED.count = UI_CREATED.count + 1
 end
 
--- Tenta chamar um mأ©todo da tab sem nunca quebrar o script.
-local function safeTabCreate(tab, methodNames, props)
-    if not tab then return nil end
+-- Tenta chamar um mأ©todo da tab/section sem nunca quebrar o script.
+local function safeCreate(obj, methodNames, props)
+    if not obj then return nil end
     for _, m in ipairs(methodNames) do
-        local fn = tab[m]
+        local fn = obj[m]
         if type(fn) == "function" then
-            local ok, res = pcall(fn, tab, props)
+            local ok, res = pcall(fn, obj, props)
             if ok and res ~= nil then
                 uiBump()
                 return res
             end
         end
     end
+    warn(("[SwimHub] elemento nأ£o criado: %s"):format(tostring(props and (props.name or props.Name) or "?")))
     return nil
-end
-
--- Cria seأ§أ£o de forma segura (Gen2 espera tabela {name=...}, nأ£o string).
-local function safeSection(tab, text)
-    if not tab then return end
-    if type(tab.CreateSection) == "function" then
-        pcall(tab.CreateSection, tab, { name = tostring(text) })
-    end
 end
 
 -- Compatibility layer: keeps the original feature code working while replacing
@@ -92,46 +85,40 @@ local function makeHandle(element, kind)
         return self
     end
 
+    function handle:Get()
+        return self._value
+    end
+
     function handle:AddColorPicker(id, opts)
         opts = opts or {}
-        local parent = self._tab
-        if parent and type(parent.CreateColorPicker) == "function" then
-            -- Gen2: {name, color, alpha, flag, callback(color, alpha)}
-            pcall(parent.CreateColorPicker, parent, {
-                name = opts.Title or opts.Name or id,
-                color = opts.Default or Color3.new(1, 1, 1),
-                flag = id,
-                callback = function(value)
-                    if opts.Callback then opts.Callback(value) end
-                end,
-            })
-            uiBump()
-        end
+        -- Tenta na tab (CreateColorPicker)
+        safeCreate(self._tab, { "CreateColorPicker" }, {
+            name = opts.Title or opts.Name or id,
+            color = opts.Default or Color3.new(1, 1, 1),
+            flag = id,
+            callback = function(value)
+                if opts.Callback then opts.Callback(value) end
+            end,
+        })
         return self
     end
 
     function handle:AddKeyPicker(id, opts)
         opts = opts or {}
-        local parent = self._tab
-        if parent and type(parent.CreateKeybind) == "function" then
-            -- Gen2: {name, value, hold, flag, callback} ("None" vira nil)
-            local init = opts.Default
-            if init == "None" then init = nil end
-            pcall(parent.CreateKeybind, parent, {
-                name = opts.Text or opts.Name or id,
-                value = init,
-                hold = (opts.Mode == "Hold"),
-                flag = id,
-                callback = function()
-                    if self._element and self._element.Set then
-                        local current = self._value == true
-                        self._value = not current
-                        pcall(self._element.Set, self._element, not current)
-                    end
-                end,
-            })
-            uiBump()
-        end
+        -- Gen2: {name, value, hold, flag, callback}
+        safeCreate(self._tab, { "CreateKeybind", "CreateKeyPicker" }, {
+            name = opts.Text or opts.Name or id,
+            value = opts.Default or "None",
+            hold = opts.Mode == "Hold",
+            flag = id,
+            callback = function()
+                if self._element and self._element.Set then
+                    local current = self._value == true
+                    self._value = not current
+                    pcall(self._element.Set, self._element, not current)
+                end
+            end,
+        })
         return self
     end
 
@@ -145,7 +132,7 @@ local function makeTabAdapter(tab)
         opts = opts or {}
         local handle
         -- Gen2 usa `value`, nأ£o `currentValue`.
-        local el = safeTabCreate(tab, { "CreateToggle", "CreateSwitch" }, {
+        local el = safeCreate(tab, { "CreateToggle", "CreateSwitch" }, {
             name = opts.Text or opts.Name or id,
             value = opts.Default == true,
             flag = id,
@@ -169,7 +156,7 @@ local function makeTabAdapter(tab)
         local rounding = tonumber(opts.Rounding) or 0
         local increment = rounding > 0 and (10 ^ -rounding) or 1
         -- Gen2 usa `value`, nأ£o `currentValue`.
-        local el = safeTabCreate(tab, { "CreateSlider" }, {
+        local el = safeCreate(tab, { "CreateSlider" }, {
             name = opts.Text or opts.Name or id,
             range = {opts.Min or 0, opts.Max or 100},
             increment = increment,
@@ -208,7 +195,8 @@ local function makeTabAdapter(tab)
         local el = safeTabCreate(tab, { "CreateDropdown" }, {
             name = opts.Text or opts.Name or id,
             options = values,
-            value = current,
+            -- Gen2 modo simples espera string, nأ£o tabela.
+            value = isMulti and current or current[1],
             multiSelect = isMulti,
             flag = id,
             callback = function(value)
@@ -227,7 +215,7 @@ local function makeTabAdapter(tab)
 
     function adapter:AddLabel(text)
         -- Gen2 NأƒO tem CreateLabel: o elemento de texto أ© CreateText.
-        local el = safeTabCreate(tab, { "CreateText", "CreateLabel", "CreateParagraph" }, {
+        local el = safeCreate(tab, { "CreateText", "CreateLabel", "CreateParagraph" }, {
             name = tostring(text),
             text = "",
         })
@@ -237,17 +225,14 @@ local function makeTabAdapter(tab)
         local label = {}
         function label:AddColorPicker(id, opts)
             opts = opts or {}
-            if type(tab.CreateColorPicker) == "function" then
-                pcall(tab.CreateColorPicker, tab, {
-                    name = opts.Title or id,
-                    color = opts.Default or Color3.new(1, 1, 1),
-                    flag = id,
-                    callback = function(value)
-                        if opts.Callback then opts.Callback(value) end
-                    end,
-                })
-                uiBump()
-            end
+            safeCreate(tab, { "CreateColorPicker" }, {
+                name = opts.Title or id,
+                color = opts.Default or Color3.new(1, 1, 1),
+                flag = id,
+                callback = function(value)
+                    if opts.Callback then opts.Callback(value) end
+                end,
+            })
             return label
         end
         return label
@@ -261,6 +246,17 @@ local function makeTabAdapter(tab)
     function adapter:AddTab(name)
         safeSection(tab, name)
         return adapter
+    end
+
+    function adapter:AddButton(id, opts)
+        opts = opts or {}
+        safeCreate(tab, { "CreateButton" }, {
+            name = opts.Text or opts.Name or id,
+            callback = function()
+                if opts.Callback then opts.Callback() end
+            end,
+        })
+        return { _tab = tab }
     end
 
     return adapter
@@ -294,6 +290,32 @@ ui.box.move = makeBox(ui.tabs.misc)
 ui.box.atvfly = makeBox(ui.tabs.misc)
 ui.box.misc = makeBox(ui.tabs.misc)
 ui.box.themeconfig = makeTabAdapter(ui.tabs.config)
+
+-- Diagnأ³stico visأ­vel: 1 toggle NATIVO direto no tab (sem adapter).
+-- Se nem ele aparecer, o problema estأ، no tab/window e nأ£o nos elementos.
+UI_DIAG = { smoke = false, smokeErr = "nأ£o executado", tabType = "?" }
+do
+    local ctab = ui.tabs and ui.tabs.combat
+    UI_DIAG.tabType = type(ctab)
+    local fn = (type(ctab) == "table" and ctab.CreateToggle) or nil
+    if type(fn) == "function" then
+        local okSmk, resSmk = pcall(fn, ctab, {
+            name = "Interface OK ًں’œ",
+            value = true,
+            flag = "__swimhub_smoke",
+            callback = function() end,
+        })
+        if okSmk and resSmk ~= nil then
+            UI_DIAG.smoke = true
+            UI_DIAG.smokeErr = "criado"
+            uiBump()
+        else
+            UI_DIAG.smokeErr = tostring(resSmk)
+        end
+    else
+        UI_DIAG.smokeErr = "tab sem CreateToggle"
+    end
+end
 
 local _CFramenew = CFrame.new
 local _Vector2new = Vector2.new
@@ -987,9 +1009,6 @@ do
             end
         end
     })
-    hbb:AddToggle('hitbox_cancollide',{Text = 'can collide',Default = false,Callback = function(v)
-        cancollide = v
-    end})
     hbb:AddSlider('hitbox_head_transparency', { Text = 'transparency', Default = 0.5, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(State)
         hitboxheadtransparency = State
     end)
@@ -1005,10 +1024,6 @@ end
 do
     local espb = ui.box.esp:AddTab("player esp")
     local es = cheat.EspLibrary.settings.enemy
-    espb:AddDropdown('espfont', {Values = { 'UI', 'System', 'Plex', 'Monospace' },Default = 1,Multi = false,Text = 'esp font',Tooltip = 'select font',Callback = function(Value)
-        cheat.EspLibrary.main_settings.textFont = Drawing.Fonts[Value]
-        cheat.EspLibrary.icaca()
-    end})
     espb:AddSlider('espfontsize', { Text = 'esp font size', Default = 13, Min = 1, Max = 30, Rounding = 0, Compact = true }):OnChanged(function(State)
         cheat.EspLibrary.main_settings.textSize = State
         cheat.EspLibrary.icaca()
@@ -1099,24 +1114,6 @@ do
             end
         })
     ---
-    espb:AddSlider('espboxtransparency',
-        { Text = 'box transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.box_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
-    espb:AddSlider('espoutlineboxtransparency',
-        { Text = 'box outline transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.box_outline_color[2] = State
-        cheat.EspLibrary.icaca()
-    end)
-    espb:AddSlider('espboxfilltransparency',
-        { Text = 'box fill transparency', Default = 0.5, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.box_fill_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
     ----------------------------------------------------------
     espb:AddToggle('esprealname', {
         Text = 'name esp',
@@ -1135,30 +1132,7 @@ do
                 cheat.EspLibrary.icaca()
             end
         })
-    espb:AddSlider('esprealnametransparency',
-        { Text = 'name transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.realname_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
     ---
-    espb:AddToggle('esprealnameoutline', {
-        Text = 'name outline',
-        Default = false,
-        Callback = function(first)
-            es.realname_outline = first
-            cheat.EspLibrary.icaca()
-        end
-    }):AddColorPicker('esprealnameoutlinecolor',
-        {
-            Default = Color3.new(),
-            Title = 'name outline color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.realname_outline_color = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
 
     ----------------------------------------------------------
     espb:AddToggle('espdistance', {
@@ -1178,72 +1152,9 @@ do
                 cheat.EspLibrary.icaca()
             end
         })
-    espb:AddSlider('espdistancetransparency',
-        { Text = 'distance transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.dist_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
     ---
-    espb:AddToggle('espdistanceoutline', {
-        Text = 'distance outline',
-        Default = false,
-        Callback = function(first)
-            es.dist_outline = first
-            cheat.EspLibrary.icaca()
-        end
-    }):AddColorPicker('espdistanceoutlinecolor',
-        {
-            Default = Color3.new(),
-            Title = 'distance outline color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.dist_outline_color = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
     ----------------------------------------------------------
-    espb:AddToggle('espweapon', {
-        Text = 'weapon esp',
-        Default = false,
-        Callback = function(first)
-            es.weapon = first
-            cheat.EspLibrary.icaca()
-        end
-    }):AddColorPicker('espweaponcolor',
-        {
-            Default = Color3.new(1, 1, 1),
-            Title = 'weapon color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.weapon_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
-    espb:AddSlider('espweapontransparency',
-        { Text = 'weapon transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.weapon_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
     ---
-    espb:AddToggle('espweaponoutline', {
-        Text = 'weapon outline',
-        Default = false,
-        Callback = function(first)
-            es.weapon_outline = first
-            cheat.EspLibrary.icaca()
-        end
-    }):AddColorPicker('espweaponoutlinecolor',
-        {
-            Default = Color3.new(),
-            Title = 'weapon outline color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.weapon_outline_color = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
     ----------------------------------------------------------
     espb:AddToggle('espskeleton', {Text = 'skeleton esp',Default = false,Callback = function(first)
         es.skeleton = first
@@ -1252,10 +1163,6 @@ do
         es.skeleton_color[1] = Value
         cheat.EspLibrary.icaca()
     end})
-    espb:AddSlider('espskeletontransparency', { Text = 'skeleton transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(State)
-        es.skeleton_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
     ----------------------------------------------------------
     espb:AddToggle('espchams', {
         Text = 'chams',
@@ -1284,29 +1191,7 @@ do
                 cheat.EspLibrary.icaca()
             end
         })
-    espb:AddLabel("chams outline color"):AddColorPicker('espchamsoutlinecolor',
-        {
-            Default = Color3.new(),
-            Title = 'chams outline color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.chamsoutline_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
     ---
-    espb:AddSlider('espchamsfilltransparency',
-        { Text = 'fill transparency', Default = 0.5, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.chams_fill_color[2] = State
-        cheat.EspLibrary.icaca()
-    end)
-    espb:AddSlider('espchamsoutlinetransparency',
-        { Text = 'outline transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.chamsoutline_color[2] = State
-        cheat.EspLibrary.icaca()
-    end)
     ----------------------------------------------------------
 end
 do
@@ -1350,29 +1235,6 @@ do
             Transparency = 0,
             Callback = function(Value)
                 es.realname_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
-    espb:AddSlider('objectesprealnametransparency',
-        { Text = 'name transparency', Default = 0, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(
-        State)
-        es.realname_color[2] = 1-State
-        cheat.EspLibrary.icaca()
-    end)
-    espb:AddToggle('objectesprealnameoutline', {
-        Text = 'name outline',
-        Default = false,
-        Callback = function(first)
-            es.realname_outline = first
-            cheat.EspLibrary.icaca()
-        end
-    }):AddColorPicker('objectesprealnameoutlinecolor',
-        {
-            Default = Color3.new(),
-            Title = 'name outline color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.realname_outline_color = Value
                 cheat.EspLibrary.icaca()
             end
         })
@@ -1532,9 +1394,6 @@ do
     local CrosshairTab = ui.box.world:AddTab("crosshair")
     cursor.rainbow = false
     cursor.sussy = false
-    CrosshairTab:AddDropdown('espfont', {Values = { 'UI', 'System', 'Plex', 'Monospace' },Default = 1,Multi = false,Text = 'esp font',Tooltip = 'select font',Callback = function(Value)
-        cursor.Font = Drawing.Fonts[Value]
-    end})
     CrosshairTab:AddToggle('crosshairenable', {Text = 'enable crosshair',Default = false,Callback = function(first)
         cursor.Enabled = first
     end}):AddColorPicker('crosshaircolor', {Default = Color3.new(1, 1, 1),Title = 'crosshair color',Transparency = 0,Callback = function(Value)
@@ -1564,25 +1423,6 @@ do
     CrosshairTab:AddToggle('crosshairenabledot', {Text = 'dot',Default = false,Callback = function(first)
         cursor.Dot = first
     end})
-    CrosshairTab:AddToggle('crosshairenablenazi', {Text = 'sussy',Default = false,Callback = function(first)
-        cursor.sussy = first
-        end})
-        CrosshairTab:AddToggle('crosshairenablefaggot', {Text = 'rainbow',Default = false,Callback = function(first)
-        cursor.rainbow = first
-    end})
-    CrosshairTab:AddToggle('crosshairtextLogo', {Text = 'text logo',Default = false,Callback = function(first)
-        cursor.Text.Logo = first
-    end}):AddColorPicker('crosshairlogocolor', {Default = Color3.new(1, 1, 1),Title = 'logo color',Transparency = 0,Callback = function(Value)
-        cursor.Text.LogoColor = Value
-    end})
-    CrosshairTab:AddToggle('crosshairtextName', {Text = 'text name',Default = false,Callback = function(first)
-        cursor.Text.Name = first
-    end}):AddColorPicker('crosshairtextcolor', {Default = Color3.new(1, 1, 1),Title = 'text color',Transparency = 0,Callback = function(Value)
-        cursor.Text.NameColor = Value
-    end})
-    CrosshairTab:AddSlider('crosshairlogooffset', {Text = 'logo fade offset',Default = 0,Min = 0,Max = 5,Rounding = 1,Compact = true}):OnChanged(function(State)
-        cursor.Text.LogoFadingOffset = State
-    end)
 
     -- // Initilisation
     local lines = {}
@@ -1995,17 +1835,6 @@ mvb:AddSlider("carfly_upspeed", {
     upspeed = State
 end)
 
-mvb:AddSlider("carfly_accel", {
-    Text = "acceleration",
-    Default = 100,
-    Min = 10,
-    Max = 300,
-    Rounding = 0,
-    Suffix = "sps",
-    Compact = false
-}):OnChanged(function(State)
-    accel = State
-end)
 
 mvb:AddLabel("hold V to go up")
 mvb:AddLabel("hold B to go down")
@@ -2186,11 +2015,19 @@ end)
 
 cheat.EspLibrary.load()
 
--- ًں’œًںڑ€ًں’œ Notificaأ§أ£o de sucesso (com contador de elementos da UI)
+-- ًں’œًںڑ€ًں’œ Notificaأ§أ£o de sucesso (com contador + diagnأ³stico do smoke test)
 pcall(function()
+    local smokeTxt = "n/a"
+    if UI_DIAG then
+        smokeTxt = UI_DIAG.smoke and "OK" or ("FALHOU: " .. tostring(UI_DIAG.smokeErr))
+    end
     window:Notify({
-        title = "SwimHub ًں’🚀💜🚀",
-        content = ("Funcionando! ًں’œًںڑ👾👾€ًں’œ (%d elementos)"):format(UI_CREATED.count),
+        title = "SwimHub ًں’œًںڑ€ًں’œ",
+        content = ("Funcionando! ًں’œًںڑ€ًں’œ (%d elementos | smoke: %s)"):format(UI_CREATED.count, smokeTxt),
     })
 end)
-warn(("[SwimHub] ًں’œً💯ںڑ€ًں’œ elementos criados: %d"):format(UI_CREATED.count))
+warn(("[SwimHub] ًں’œًںڑ€ًں’œ elementos: %d | smoke: %s | tab: %s"):format(
+    UI_CREATED.count,
+    UI_DIAG and (UI_DIAG.smoke and "OK" or tostring(UI_DIAG.smokeErr)) or "n/a",
+    UI_DIAG and UI_DIAG.tabType or "?"
+))
