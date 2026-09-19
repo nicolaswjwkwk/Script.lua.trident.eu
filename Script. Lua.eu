@@ -1872,7 +1872,7 @@ local findcar = function()
     dist = 50
 
     for i, v in pairs(workspace:GetChildren()) do
-        if v:FindFirstChild("Seat") and v:FindFirstChild("Frame") then
+        if v:FindFirstChild("Seat") and v:FindFirstChild("Frame") and trident.middlepart then
             local distance = (v.Frame.Position - trident.middlepart.Position).Magnitude
 
             if distance < dist then
