@@ -373,11 +373,26 @@ local old; old = hookmetamethod(Random.new(), "__namecall", newcclosure(function
     return old(self, ...)
 end))
 ]]
-repeat if not pcall(function()
-    trident.middlepart = workspace.Const.Ignore.LocalCharacter.Middle
-    trident.original_model = game:GetService("ReplicatedStorage").Shared.entities.Player.Model
-    trident.tcp = LocalPlayer.TCP
-end) then task.wait(0.5) end until trident.middlepart and trident.original_model and trident.tcp
+-- Espera o character com TIMEOUT (15s): antes travava aqui para sempre em mapa
+-- sem workspace.Const (sأ³ janela + smoke apareciam, o resto nunca era criado).
+do
+    local tries = 0
+    while not (trident.middlepart and trident.original_model and trident.tcp) and tries < 30 do
+        pcall(function()
+            trident.middlepart = workspace.Const.Ignore.LocalCharacter.Middle
+            trident.original_model = game:GetService("ReplicatedStorage").Shared.entities.Player.Model
+            trident.tcp = LocalPlayer.TCP
+        end)
+        if not (trident.middlepart and trident.original_model and trident.tcp) then
+            tries = tries + 1
+            task.wait(0.5)
+        end
+    end
+    trident.loaded = trident.middlepart ~= nil and trident.original_model ~= nil and trident.tcp ~= nil
+    if not trident.loaded then
+        warn("[SwimHub] trident nأ£o encontrado (15s) â€” UI liberada sem character")
+    end
+end
 
 cheat.EspLibrary = {}; LPH_NO_VIRTUALIZE(function()
     local esp_table = {}
@@ -580,16 +595,18 @@ cheat.EspLibrary = {}; LPH_NO_VIRTUALIZE(function()
     end
 
     local enttiyidentification = {}
-    for i, v in game:GetService("ReplicatedStorage").Shared.entities:GetChildren() do
-        local model = _FindFirstChild(v, "Model")
-        if model and model.PrimaryPart then
-            enttiyidentification[v.Name] = {
-                CollisionGroup = model.PrimaryPart.CollisionGroup,
-                Material = model.PrimaryPart.Material,
-                Color = model.PrimaryPart.Color
-            }
+    pcall(function()
+        for i, v in game:GetService("ReplicatedStorage").Shared.entities:GetChildren() do
+            local model = _FindFirstChild(v, "Model")
+            if model and model.PrimaryPart then
+                enttiyidentification[v.Name] = {
+                    CollisionGroup = model.PrimaryPart.CollisionGroup,
+                    Material = model.PrimaryPart.Material,
+                    Color = model.PrimaryPart.Color
+                }
+            end
         end
-    end
+    end)
     local function identify_model(model)
         if model.ClassName ~= "Model" then return false, false end
         if _FindFirstChildOfClass(model, "MeshPart") and _FindFirstChildOfClass(model, "MeshPart").MeshId == "rbxassetid://12939036056" then
@@ -959,7 +976,8 @@ local aimbot = {
 
 do
     local validcharacters = {}
-    local hbc, original_size, hbsize = nil, trident.original_model.Head.Size, _Vector3new(0.5, 1, 0.5)
+    local _omHead = trident.original_model and trident.original_model:FindFirstChild("Head")
+    local hbc, original_size, hbsize = nil, _omHead and _omHead.Size or _Vector3new(2, 1, 1), _Vector3new(0.5, 1, 0.5)
     local dynamic, alwayshead = false, false
     local hitboxheadsizex, hitboxheadsizey, hitboxheadtransparency, cancollide = 10, 10, 0.5, false
     local function addtovc(obj)
@@ -1669,21 +1687,27 @@ mvb:AddToggle("fakecrouch", {
 
 local freecamoffset = Vector3.zero
 
-local middle = workspace.Const.Ignore.LocalCharacter.Middle
-local bottom = workspace.Const.Ignore.LocalCharacter.Bottom
-local top = workspace.Const.Ignore.LocalCharacter.Top
+local middle, bottom, top = nil, nil, nil
+pcall(function()
+    middle = workspace.Const.Ignore.LocalCharacter.Middle
+    bottom = workspace.Const.Ignore.LocalCharacter.Bottom
+    top = workspace.Const.Ignore.LocalCharacter.Top
+end)
 
-local originalprismcframe = top.Prism1.CFrame
-local pos = middle.CFrame
+local _prism = top and top:FindFirstChild("Prism1")
+local originalprismcframe = _prism and _prism.CFrame or nil
+local pos = middle and middle.CFrame or CFrame.new()
 
 mvb:AddToggle("longneck", {
     Text = "long neck",
     Default = false,
     Callback = function(first)
-        top.Prism1.CFrame =
-            first
-            and originalprismcframe - Vector3.yAxis * 5
-            or originalprismcframe
+        if top and top:FindFirstChild("Prism1") and originalprismcframe then
+            top.Prism1.CFrame =
+                first
+                and originalprismcframe - Vector3.yAxis * 5
+                or originalprismcframe
+        end
     end
 }):AddKeyPicker("longneck_bind", {
     Default = "None",
@@ -1699,9 +1723,9 @@ mvb:AddToggle("freecam_enabled", {
     Callback = function(first)
         enabled = first
 
-        middle.CanCollide = not first
-        bottom.CanCollide = not first
-        top.CanCollide = not first
+        if middle then middle.CanCollide = not first end
+        if bottom then bottom.CanCollide = not first end
+        if top then top.CanCollide = not first end
     end
 }):AddKeyPicker("freecam_bind", {
     Default = "None",
@@ -1726,7 +1750,9 @@ end)
 cheat.utility.new_heartbeat(LPH_JIT_MAX(function(delta)
 
     if tick() - fakecrouch_timer >= 0.15 then
-        trident.tcp:FireServer(2, true)
+        if trident.tcp then
+            pcall(function() trident.tcp:FireServer(2, true) end)
+        end
         fakecrouch_timer = tick()
     end
 
