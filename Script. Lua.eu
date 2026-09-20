@@ -792,110 +792,155 @@ local aimbot = {
 
 do
     local validcharacters = {}
-    local _omHead = trident.original_model and trident.original_model:FindFirstChild("Head")
-    local hbc, original_size, hbsize = nil, _omHead and _omHead.Size or _Vector3new(2, 1, 1), _Vector3new(0.5, 1, 0.5)
-    local dynamic, alwayshead = false, false
-    local hitboxheadsizex, hitboxheadsizey, hitboxheadtransparency, cancollide = 10, 10, 0.5, false
-    local function addtovc(obj)
-        if not obj then return end
-        if not obj:FindFirstChild("Head") and not obj:FindFirstChild("LowerTorso") then return end
-        validcharacters[obj] = obj
+local _omHead = trident.original_model and trident.original_model:FindFirstChild("Head")
+local hbc, original_size, hbsize =
+    nil,
+    _omHead and _omHead.Size or _Vector3new(2, 1, 1),
+    _Vector3new(0.5, 1, 0.5)
+
+local dynamic, alwayshead = false, false
+local hitboxheadsizex, hitboxheadsizey, hitboxheadtransparency, cancollide =
+    10, 10, 0.5, false
+
+local function addtovc(obj)
+    if not obj then return end
+    if not obj:FindFirstChild("Head") and not obj:FindFirstChild("LowerTorso") then
+        return
     end
 
-    local function removefromvc(obj)
-        if not validcharacters[obj] then return end
-        validcharacters[obj] = nil
-    end
+    validcharacters[obj] = obj
+end
 
-    for i, v in next, workspace:GetChildren() do addtovc(v) end
-    workspace.ChildAdded:Connect(addtovc);
-    workspace.ChildRemoved:Connect(removefromvc);
+local function removefromvc(obj)
+    if not validcharacters[obj] then return end
+    validcharacters[obj] = nil
+end
 
-    local hbb = HitboxSection
-    hbb:CreateToggle({
-        Name = 'hitbox expander',
-        CurrentValue = false,
-        Flag = 'hitbox_enabled',
-        Callback = function(value)
-            aimbot.hitboxes = value
-            if hbc then hbc:Disconnect() end
-            if value then
-                hbc = cheat.utility.new_heartbeat(function()
-                    local trans = hitboxheadtransparency
-                    for i, v in validcharacters do
-                        local primpart = v and _FindFirstChild(v, 'Head')
-                        if primpart then
-                            primpart.Size = hbsize
-                            primpart.Transparency = trans
-                            primpart.CanCollide = cancollide
-                        end
-                    end
-                end)
-            else
-                if hbc then hbc:Disconnect() end
+for i, v in next, workspace:GetChildren() do
+    addtovc(v)
+end
+
+workspace.ChildAdded:Connect(addtovc)
+workspace.ChildRemoved:Connect(removefromvc)
+
+-- ============================================================
+-- HITBOX
+-- IMPORTANTE:
+-- CreateToggle/CreateSlider pertencem à TAB, não à SECTION.
+-- ============================================================
+
+CombatTab:CreateToggle({
+    name = "hitbox expander",
+    value = false,
+    flag = "hitbox_enabled",
+
+    callback = function(value)
+        aimbot.hitboxes = value
+
+        if hbc then
+            hbc:Disconnect()
+            hbc = nil
+        end
+
+        if value then
+            hbc = cheat.utility.new_heartbeat(function()
+                local trans = hitboxheadtransparency
+
                 for i, v in validcharacters do
-                    local primpart = v and _FindFirstChild(v, 'Head')
+                    local primpart = v and _FindFirstChild(v, "Head")
+
                     if primpart then
-                        primpart.Size = original_size
-                        primpart.Transparency = 0
-                        primpart.CanCollide = true
+                        primpart.Size = hbsize
+                        primpart.Transparency = trans
+                        primpart.CanCollide = cancollide
                     end
+                end
+            end)
+        else
+            for i, v in validcharacters do
+                local primpart = v and _FindFirstChild(v, "Head")
+
+                if primpart then
+                    primpart.Size = original_size
+                    primpart.Transparency = 0
+                    primpart.CanCollide = true
                 end
             end
         end
-    })
-    hbb:CreateSlider({
-        Name = 'transparency',
-        Range = {0, 1},
-        Increment = 0.1,
-        CurrentValue = 0.5,
-        Flag = 'hitbox_head_transparency',
-        Callback = function(State)
-            hitboxheadtransparency = State
-        end
-    })
-    hbb:CreateSlider({
-        Name = 'size x',
-        Range = {1, 15},
-        Increment = 0.1,
-        CurrentValue = 10,
-        Flag = 'hitbox_head_size_x',
-        Callback = function(State)
-            hitboxheadsizex = State
-            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
-        end
-    })
-    hbb:CreateSlider({
-        Name = 'size y',
-        Range = {1, 15},
-        Increment = 0.1,
-        CurrentValue = 10,
-        Flag = 'hitbox_head_size_y',
-        Callback = function(State)
-            hitboxheadsizey = State
-            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
-        end
-    })
-end
+    end
+})
+
+CombatTab:CreateSlider({
+    name = "transparency",
+    range = {0, 1},
+    increment = 0.1,
+    value = 0.5,
+    flag = "hitbox_head_transparency",
+
+    callback = function(State)
+        hitboxheadtransparency = State
+    end
+})
+
+CombatTab:CreateSlider({
+    name = "size x",
+    range = {1, 15},
+    increment = 0.1,
+    value = 10,
+    flag = "hitbox_head_size_x",
+
+    callback = function(State)
+        hitboxheadsizex = State
+        hbsize = _Vector3new(
+            hitboxheadsizex,
+            hitboxheadsizey,
+            hitboxheadsizex
+        )
+    end
+})
+
+CombatTab:CreateSlider({
+    name = "size y",
+    range = {1, 15},
+    increment = 0.1,
+    value = 10,
+    flag = "hitbox_head_size_y",
+
+    callback = function(State)
+        hitboxheadsizey = State
+        hbsize = _Vector3new(
+            hitboxheadsizex,
+            hitboxheadsizey,
+            hitboxheadsizex
+        )
+    end
+})
+
 do
-    local espb = PlayerESPSection
+    -- PlayerESPSection é uma SECTION.
+    -- Os elementos precisam ser criados na TAB que contém essa section.
+    local espb = VisualsTab
     local es = cheat.EspLibrary.settings.enemy
+
     espb:CreateSlider({
-        Name = 'esp font size',
-        Range = {1, 30},
-        Increment = 1,
-        CurrentValue = 13,
-        Flag = 'espfontsize',
-        Callback = function(State)
+        name = "esp font size",
+        range = {1, 30},
+        increment = 1,
+        value = 13,
+        flag = "espfontsize",
+
+        callback = function(State)
             cheat.EspLibrary.main_settings.textSize = State
             cheat.EspLibrary.icaca()
         end
     })
+
     espb:CreateToggle({
-        Name = 'simpler corner calc (fps)',
-        CurrentValue = false,
-        Flag = 'espsimplecalc',
-        Callback = function(first)
+        name = "simpler corner calc (fps)",
+        value = false,
+        flag = "espsimplecalc",
+
+        callback = function(first)
             cheat.EspLibrary.main_settings.simplecalc = first
             cheat.EspLibrary.icaca()
         end
