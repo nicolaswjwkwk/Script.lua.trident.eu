@@ -1,12 +1,3 @@
-    SWG_DiscordUser = "swim"
-    SWG_DiscordID = 1337
-    SWG_Private = true
-    SWG_Dev = false
-    SWG_Version = "free"
-    SWG_Title = 'free swimhub.xyz %s - %s | discord.gg/priv9'
-    SWG_ShortName = 'free'
-    SWG_FullName = 'ts'
-    SWG_FFA = false
 --- FABRICATED VALUES END!!!
 
 local clone = cloneref or function(v) return v end
