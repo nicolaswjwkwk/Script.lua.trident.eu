@@ -1799,19 +1799,8 @@ local enabled = false
 local speed = 55
 local fakecrouch_timer = tick()
 
-mvb:AddToggle("fakecrouch", {
-    Text = "fake crouch",
-    Default = false,
-    Callback = function(first)
-        aimbot.silentwalk = first
-    end
-}):AddKeyPicker("silentwalk_bind", {
-    Default = "None",
-    SyncToggleState = true,
-    Mode = "Toggle",
-    Text = "fake crouch",
-    NoUI = false
-})
+-- old adapter call removed: mvb:AddToggle("fakecrouch", ...
+-- agora usa MiscTab:CreateToggle acima.
 
 local freecamoffset = Vector3.zero
 
@@ -1826,9 +1815,22 @@ local _prism = top and top:FindFirstChild("Prism1")
 local originalprismcframe = _prism and _prism.CFrame or nil
 local pos = middle and middle.CFrame or CFrame.new()
 
-mvb:AddToggle("longneck", {
-    Text = "long neck",
-    Default = false,
+-- Toggle fake crouch now created nativamente via MiscTab:CreateToggle
+-- (anteriormente via adapter mvb:AddToggle).
+MiscTab:CreateToggle({
+    Name = "fake crouch",
+    CurrentValue = false,
+    Flag = "fake_crouch",
+    Callback = function(first)
+        aimbot.silentwalk = first
+    end,
+})
+
+-- Toggle longneck agora criado nativamente via MiscTab:CreateToggle
+MiscTab:CreateToggle({
+    Name = "long neck",
+    CurrentValue = false,
+    Flag = "long_neck",
     Callback = function(first)
         if top and top:FindFirstChild("Prism1") and originalprismcframe then
             top.Prism1.CFrame =
@@ -1836,44 +1838,8 @@ mvb:AddToggle("longneck", {
                 and originalprismcframe - Vector3.yAxis * 5
                 or originalprismcframe
         end
-    end
-}):AddKeyPicker("longneck_bind", {
-    Default = "None",
-    SyncToggleState = true,
-    Mode = "Toggle",
-    Text = "long neck",
-    NoUI = false
+    end,
 })
-
-mvb:AddToggle("freecam_enabled", {
-    Text = "freecam enabled",
-    Default = false,
-    Callback = function(first)
-        enabled = first
-
-        if middle then middle.CanCollide = not first end
-        if bottom then bottom.CanCollide = not first end
-        if top then top.CanCollide = not first end
-    end
-}):AddKeyPicker("freecam_bind", {
-    Default = "None",
-    SyncToggleState = true,
-    Mode = "Toggle",
-    Text = "freecam",
-    NoUI = false
-})
-
-mvb:AddSlider("freecam_speed", {
-    Text = "speed",
-    Default = 10,
-    Min = 1,
-    Max = 300,
-    Rounding = 0,
-    Suffix = "sps",
-    Compact = false
-}):OnChanged(function(State)
-    speed = State
-end)
 
 cheat.utility.new_heartbeat(LPH_JIT_MAX(function(delta)
 
@@ -1951,43 +1917,18 @@ local speed = 55
 local accel = 100
 local upspeed = 15
 
-mvb:AddToggle("carfly_enabled", {
-    Text = "car fly enabled",
-    Default = false,
+-- Toggle carfly_enabled agora criado nativamente via MiscTab:CreateToggle
+MiscTab:CreateToggle({
+    Name = "car fly enabled",
+    CurrentValue = false,
+    Flag = "car_fly_enabled",
     Callback = function(first)
         carfly_enabled = first
-    end
-}):AddKeyPicker("carfly_bind", {
-    Default = "None",
-    SyncToggleState = true,
-    Mode = "Toggle",
-    Text = "car fly",
-    NoUI = false
+    end,
 })
 
-mvb:AddSlider("carfly_speed", {
-    Text = "speed",
-    Default = 150,
-    Min = 50,
-    Max = 300,
-    Rounding = 0,
-    Suffix = "sps",
-    Compact = false
-}):OnChanged(function(State)
-    speed = State
-end)
-
-mvb:AddSlider("carfly_upspeed", {
-    Text = "up speed",
-    Default = 15,
-    Min = 5,
-    Max = 100,
-    Rounding = 0,
-    Suffix = "sps",
-    Compact = false
-}):OnChanged(function(State)
-    upspeed = State
-end)
+-- old adapter call removed: mvb:AddToggle("carfly_enabled", ...
+-- (anteriormente via adapter mvb:AddToggle).
 
 
 mvb:AddLabel("hold V to go up")
@@ -2108,26 +2049,29 @@ do
     local chatEnabled = false
     local chatInterval = 5
 
-    chatTab:AddLabel("Chat controls")
-    chatTab:AddToggle("chat_spam_enabled", {
-        Text = "chat enabled",
-        Default = false,
-        Callback = function(value)
-            chatEnabled = value
-        end
-    })
-    chatTab:AddSlider("chat_spam_interval", {
-        Text = "interval",
-        Default = 5,
-        Min = 1,
-        Max = 60,
-        Rounding = 0,
-        Compact = true,
-    }):OnChanged(function(value)
-        chatInterval = value
-    end)
+-- Chat controls now created nativamente via MiscTab.
+MiscTab:CreateLabel({Name = "Chat controls"})
+MiscTab:CreateToggle({
+    Name = "chat enabled",
+    CurrentValue = false,
+    Flag = "chat_spam_enabled",
+    Callback = function(value)
+        chatEnabled = value
+    end,
+})
 
-    task.spawn(function()
+MiscTab:CreateSlider({
+    Name = "chat spam interval",
+    Range = {1, 60},
+    Increment = 1,
+    CurrentValue = 5,
+    Flag = "chat_spam_interval",
+    Callback = function(value)
+        chatInterval = value
+    end,
+})
+
+task.spawn(function()
         while task.wait(chatInterval) do
             if chatEnabled and trident.tcp then
                 pcall(function()
