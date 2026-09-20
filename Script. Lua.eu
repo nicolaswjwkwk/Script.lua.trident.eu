@@ -940,9 +940,10 @@ do
     workspace.ChildRemoved:Connect(removefromvc);
 
     local hbb = HitboxSection
-    hbb:AddToggle('hitbox_enabled', {
-        Text = 'hitbox expander',
-        Default = false,
+    hbb:CreateToggle({
+        Name = 'hitbox expander',
+        CurrentValue = false,
+        Flag = 'hitbox_enabled',
         Callback = function(value)
             aimbot.hitboxes = value
             if hbc then hbc:Disconnect() end
@@ -971,235 +972,307 @@ do
             end
         end
     })
-    hbb:AddSlider('hitbox_head_transparency', { Text = 'transparency', Default = 0.5, Min = 0, Max = 1, Rounding = 1, Compact = false }):OnChanged(function(State)
-        hitboxheadtransparency = State
-    end)
-    hbb:AddSlider('hitbox_head_size_x', { Text = 'size x', Default = 10, Min = 1, Max = 15, Rounding = 1, Compact = false }):OnChanged(function(State)
-        hitboxheadsizex = State
-        hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
-    end)
-    hbb:AddSlider('hitbox_head_size_y', { Text = 'size y', Default = 10, Min = 1, Max = 15, Rounding = 1, Compact = false }):OnChanged(function(State)
-        hitboxheadsizey = State
-        hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
-    end)
+    hbb:CreateSlider({
+        Name = 'transparency',
+        Range = {0, 1},
+        Increment = 0.1,
+        CurrentValue = 0.5,
+        Flag = 'hitbox_head_transparency',
+        Callback = function(State)
+            hitboxheadtransparency = State
+        end
+    })
+    hbb:CreateSlider({
+        Name = 'size x',
+        Range = {1, 15},
+        Increment = 0.1,
+        CurrentValue = 10,
+        Flag = 'hitbox_head_size_x',
+        Callback = function(State)
+            hitboxheadsizex = State
+            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
+        end
+    })
+    hbb:CreateSlider({
+        Name = 'size y',
+        Range = {1, 15},
+        Increment = 0.1,
+        CurrentValue = 10,
+        Flag = 'hitbox_head_size_y',
+        Callback = function(State)
+            hitboxheadsizey = State
+            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
+        end
+    })
 end
 do
     local espb = PlayerESPSection
     local es = cheat.EspLibrary.settings.enemy
-    espb:AddSlider('espfontsize', { Text = 'esp font size', Default = 13, Min = 1, Max = 30, Rounding = 0, Compact = true }):OnChanged(function(State)
-        cheat.EspLibrary.main_settings.textSize = State
-        cheat.EspLibrary.icaca()
-    end)
-    espb:AddToggle('espsimplecalc', {
-        Text = 'simpler corner calc (fps)',
-        Default = false,
+    espb:CreateSlider({
+        Name = 'esp font size',
+        Range = {1, 30},
+        Increment = 1,
+        CurrentValue = 13,
+        Flag = 'espfontsize',
+        Callback = function(State)
+            cheat.EspLibrary.main_settings.textSize = State
+            cheat.EspLibrary.icaca()
+        end
+    })
+    espb:CreateToggle({
+        Name = 'simpler corner calc (fps)',
+        CurrentValue = false,
+        Flag = 'espsimplecalc',
         Callback = function(first)
             cheat.EspLibrary.main_settings.simplecalc = first
             cheat.EspLibrary.icaca()
         end
     })
-    espb:AddToggle('espswitch', {
-        Text = 'enable esp',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'enable esp',
+        CurrentValue = false,
+        Flag = 'espswitch',
         Callback = function(first)
             es.enabled = first
             cheat.EspLibrary.icaca()
         end
     })
-    espb:AddToggle('espteamswitch', {
-        Text = 'team/ai check',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'team/ai check',
+        CurrentValue = false,
+        Flag = 'espteamswitch',
         Callback = function(first)
             cheat.EspLibrary.main_settings.teamcheck = first
             cheat.EspLibrary.icaca()
         end
     })
-    espb:AddToggle('espsleeperswitch', {
-        Text = 'sleeper check',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'sleeper check',
+        CurrentValue = false,
+        Flag = 'espsleeperswitch',
         Callback = function(first)
             cheat.EspLibrary.main_settings.sleepcheck = first
             cheat.EspLibrary.icaca()
         end
     })
     ----------------------------------------------------------
-    espb:AddToggle('espbox', {
-        Text = 'box esp',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'box esp',
+        CurrentValue = false,
+        Flag = 'espbox',
         Callback = function(first)
             es.box = first
             cheat.EspLibrary.icaca()
         end
-    }):AddColorPicker('espboxcolor', {
-        Default = Color3.new(1, 1, 1),
-        Title = 'box color',
-        Transparency = 0,
+    })
+    espb:CreateColorPicker({
+        Name = 'box color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'espboxcolor',
         Callback = function(Value)
             es.box_color[1] = Value
             cheat.EspLibrary.icaca()
         end
     })
     ---
-    espb:AddToggle('espboxfill', {
-        Text = 'box fill',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'box fill',
+        CurrentValue = false,
+        Flag = 'espboxfill',
         Callback = function(first)
             es.box_fill = first
             cheat.EspLibrary.icaca()
         end
-    }):AddColorPicker('espboxfillcolor',
-        {
-            Default = Color3.new(1, 1, 1),
-            Title = 'box fill color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.box_fill_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
+    })
+    espb:CreateColorPicker({
+        Name = 'box fill color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'espboxfillcolor',
+        Callback = function(Value)
+            es.box_fill_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
     ---
-    espb:AddToggle('espoutlinebox', {
-        Text = 'box outline',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'box outline',
+        CurrentValue = false,
+        Flag = 'espoutlinebox',
         Callback = function(first)
             es.box_outline = first
             cheat.EspLibrary.icaca()
         end
-    }):AddColorPicker('espboxoutlinecolor',
-        {
-            Default = Color3.new(),
-            Title = 'box outline color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.box_outline_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
+    })
+    espb:CreateColorPicker({
+        Name = 'box outline color',
+        Color = Color3.new(),
+        Flag = 'espboxoutlinecolor',
+        Callback = function(Value)
+            es.box_outline_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
     ---
     ----------------------------------------------------------
-    espb:AddToggle('esprealname', {
-        Text = 'name esp',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'name esp',
+        CurrentValue = false,
+        Flag = 'esprealname',
         Callback = function(first)
             es.realname = first
             cheat.EspLibrary.icaca()
         end
-    }):AddColorPicker('esprealnamecolor',
-        {
-            Default = Color3.new(1, 1, 1),
-            Title = 'name color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.realname_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
+    })
+    espb:CreateColorPicker({
+        Name = 'name color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'esprealnamecolor',
+        Callback = function(Value)
+            es.realname_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
     ---
 
     ----------------------------------------------------------
-    espb:AddToggle('espdistance', {
-        Text = 'distance esp',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'distance esp',
+        CurrentValue = false,
+        Flag = 'espdistance',
         Callback = function(first)
             es.dist = first
             cheat.EspLibrary.icaca()
         end
-    }):AddColorPicker('espdistancecolor',
-        {
-            Default = Color3.new(1, 1, 1),
-            Title = 'distance color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.dist_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
+    })
+    espb:CreateColorPicker({
+        Name = 'distance color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'espdistancecolor',
+        Callback = function(Value)
+            es.dist_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
     ---
     ----------------------------------------------------------
-    ---
+    espb:CreateToggle({
+        Name = 'skeleton esp',
+        CurrentValue = false,
+        Flag = 'espskeleton',
+        Callback = function(first)
+            es.skeleton = first
+            cheat.EspLibrary.icaca()
+        end
+    })
+    espb:CreateColorPicker({
+        Name = 'skeleton color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'espskeletoncolor',
+        Callback = function(Value)
+            es.skeleton_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
     ----------------------------------------------------------
-    espb:AddToggle('espskeleton', {Text = 'skeleton esp',Default = false,Callback = function(first)
-        es.skeleton = first
-        cheat.EspLibrary.icaca()
-    end}):AddColorPicker('espskeletoncolor', {Default = Color3.new(1, 1, 1),Title = 'skeleton color',Transparency = 0,Callback = function(Value)
-        es.skeleton_color[1] = Value
-        cheat.EspLibrary.icaca()
-    end})
-    ----------------------------------------------------------
-    espb:AddToggle('espchams', {
-        Text = 'chams',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'chams',
+        CurrentValue = false,
+        Flag = 'espchams',
         Callback = function(first)
             es.chams = first
             cheat.EspLibrary.icaca()
         end
     })
-    espb:AddToggle('espchamsvisibleonly', {
-        Text = 'chams visible only',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'chams visible only',
+        CurrentValue = false,
+        Flag = 'espchamsvisibleonly',
         Callback = function(first)
             es.chams_visible_only = first
             cheat.EspLibrary.icaca()
         end
     })
     ---
-    espb:AddLabel("chams fill color"):AddColorPicker('espchamsfillcolor',
-        {
-            Default = Color3.new(),
-            Title = 'chams fill color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.chams_fill_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
+    espb:CreateLabel({Text = "chams fill color"})
+    espb:CreateColorPicker({
+        Name = 'chams fill color',
+        Color = Color3.new(),
+        Flag = 'espchamsfillcolor',
+        Callback = function(Value)
+            es.chams_fill_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
     ---
     ----------------------------------------------------------
 end
 do
     local espb = ObjectESPSection
     local es = cheat.EspLibrary.settings.object
-    espb:AddDropdown('objectespfont', {Values = { 'UI', 'System', 'Plex', 'Monospace' },Default = 1,Multi = false,Text = 'esp font',Tooltip = 'select font',Callback = function(Value)
-        cheat.EspLibrary.main_object_settings.textFont = Drawing.Fonts[Value]
-        cheat.EspLibrary.icaca()
-    end})
-    espb:AddSlider('objectespfontsize', { Text = 'esp font size', Default = 13, Min = 1, Max = 30, Rounding = 0, Compact = true }):OnChanged(function(State)
-        cheat.EspLibrary.main_object_settings.textSize = State
-        cheat.EspLibrary.icaca()
-    end)
-    espb:AddDropdown('objectespallowed', {Values = {
-        'ATV', 'Stone', 'Nitrate', 'Iron', 'Backpack',
-        'Tree1', 'Tree2', 'Tree3', 'Tree4',
-        'TeslaPylon', 'GasTrap', 'ClaimTotem'
-    },Default = 0,Multi = true,Text = 'objects',Tooltip = 'select objects thats gonna show up',Callback = function(Value)
-        cheat.EspLibrary.main_object_settings.allowed = Value
-        cheat.EspLibrary.icaca()
-    end})
-    espb:AddToggle('objectespswitch', {
-        Text = 'enable esp',
-        Default = false,
+    espb:CreateDropdown({
+        Name = 'esp font',
+        Options = { 'UI', 'System', 'Plex', 'Monospace' },
+        CurrentOption = {'Monospace'},
+        MultiSelect = false,
+        Flag = 'objectespfont',
+        Callback = function(Value)
+            cheat.EspLibrary.main_object_settings.textFont = Drawing.Fonts[Value[1]]
+            cheat.EspLibrary.icaca()
+        end
+    })
+    espb:CreateSlider({
+        Name = 'esp font size',
+        Range = {1, 30},
+        Increment = 1,
+        CurrentValue = 13,
+        Flag = 'objectespfontsize',
+        Callback = function(State)
+            cheat.EspLibrary.main_object_settings.textSize = State
+            cheat.EspLibrary.icaca()
+        end
+    })
+    espb:CreateDropdown({
+        Name = 'objects',
+        Options = {
+            'ATV', 'Stone', 'Nitrate', 'Iron', 'Backpack',
+            'Tree1', 'Tree2', 'Tree3', 'Tree4',
+            'TeslaPylon', 'GasTrap', 'ClaimTotem'
+        },
+        CurrentOption = {},
+        MultiSelect = true,
+        Flag = 'objectespallowed',
+        Callback = function(Value)
+            cheat.EspLibrary.main_object_settings.allowed = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
+    espb:CreateToggle({
+        Name = 'enable esp',
+        CurrentValue = false,
+        Flag = 'objectespswitch',
         Callback = function(first)
             es.enabled = first
             cheat.EspLibrary.icaca()
         end
     })
-    espb:AddToggle('objectesprealname', {
-        Text = 'name esp',
-        Default = false,
+    espb:CreateToggle({
+        Name = 'name esp',
+        CurrentValue = false,
+        Flag = 'objectesprealname',
         Callback = function(first)
             es.realname = first
             cheat.EspLibrary.icaca()
         end
-    }):AddColorPicker('objectesprealnamecolor',
-        {
-            Default = Color3.new(1, 1, 1),
-            Title = 'name color',
-            Transparency = 0,
-            Callback = function(Value)
-                es.realname_color[1] = Value
-                cheat.EspLibrary.icaca()
-            end
-        })
+    })
+    espb:CreateColorPicker({
+        Name = 'name color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'objectesprealnamecolor',
+        Callback = function(Value)
+            es.realname_color[1] = Value
+            cheat.EspLibrary.icaca()
+        end
+    })
 end
 local canuseimages = pcall(function()
     cheat.utility.new_drawing("Image", {}):Remove()
@@ -1212,19 +1285,41 @@ do
     local enabled, dynamic = false, false;
     local color1, color2 = Color3.new(1,1,1), Color3.new();
     local watermarktab = CheatVisualsSection
-    local watermarktoggle = watermarktab:AddToggle('watermark_enabled', {Text = 'enabled',Default = false,Callback = function(first)
-        enabled = first
-    end})
-    watermarktoggle:AddColorPicker('watermark_color1',{Default = Color3.new(),Title = canuseimages and 'color left' or 'color',Transparency = 0,Callback = function(Value)
-        color1 = Value
-        if not canuseimages then color2 = Value end
-    end})
-    if canuseimages then watermarktoggle:AddColorPicker('watermark_color2',{Default = Color3.new(),Title = 'color right',Transparency = 0,Callback = function(Value)
-        color2 = Value
-    end}); end
-    watermarktab:AddToggle('watermark_rainbowcolor', {Text = 'rainbow',Default = false,Callback = function(first)
-        dynamic = first
-    end})
+    local watermarktoggle = watermarktab:CreateToggle({
+        Name = 'enabled',
+        CurrentValue = false,
+        Flag = 'watermark_enabled',
+        Callback = function(first)
+            enabled = first
+        end
+    })
+    watermarktab:CreateColorPicker({
+        Name = canuseimages and 'color left' or 'color',
+        Color = Color3.new(),
+        Flag = 'watermark_color1',
+        Callback = function(Value)
+            color1 = Value
+            if not canuseimages then color2 = Value end
+        end
+    })
+    if canuseimages then
+        watermarktab:CreateColorPicker({
+            Name = 'color right',
+            Color = Color3.new(),
+            Flag = 'watermark_color2',
+            Callback = function(Value)
+                color2 = Value
+            end
+        })
+    end
+    watermarktab:CreateToggle({
+        Name = 'rainbow',
+        CurrentValue = false,
+        Flag = 'watermark_rainbowcolor',
+        Callback = function(first)
+            dynamic = first
+        end
+    })
     local leftcolor, rightcolor, watertext = 
     Color3.new(0.000000, 0.666667, 0.333333), 
     Color3.new(0.349020, 0.000000, 1.000000),
@@ -1317,12 +1412,24 @@ do
     local WorldTab = WorldVisualsSection
     local time = 12
     local timechanger = false
-    WorldTab:AddToggle('enabletimechanger', {Text = 'enable time changer',Default = false,Callback = function(first)
-        timechanger = first
-    end})
-    WorldTab:AddSlider('timechanger',{ Text = 'time changer', Default = mathround(Lighting.ClockTime), Min = 0, Max = 24, Rounding = 1, Compact = false }):OnChanged(function(State)
-        time = State
-    end)
+    WorldTab:CreateToggle({
+        Name = 'enable time changer',
+        CurrentValue = false,
+        Flag = 'enabletimechanger',
+        Callback = function(first)
+            timechanger = first
+        end
+    })
+    WorldTab:CreateSlider({
+        Name = 'time changer',
+        Range = {0, 24},
+        Increment = 0.1,
+        CurrentValue = mathround(Lighting.ClockTime),
+        Flag = 'timechanger',
+        Callback = function(State)
+            time = State
+        end
+    })
     cheat.utility.new_heartbeat(function()
         if timechanger then
             Lighting.ClockTime = time
@@ -1356,35 +1463,94 @@ do
     local CrosshairTab = CrosshairSection
     cursor.rainbow = false
     cursor.sussy = false
-    CrosshairTab:AddToggle('crosshairenable', {Text = 'enable crosshair',Default = false,Callback = function(first)
-        cursor.Enabled = first
-    end}):AddColorPicker('crosshaircolor', {Default = Color3.new(1, 1, 1),Title = 'crosshair color',Transparency = 0,Callback = function(Value)
-        cursor.Color = Value
-    end})
-    CrosshairTab:AddSlider('crosshairspeed', {Text = 'speed',Default = 3,Min = 0.1,Max = 15,Rounding = 1,Compact = true}):OnChanged(function(State)
-        cursor.Speed = State / 10
-    end)
-    CrosshairTab:AddSlider('crosshairradius', {Text = 'radius',Default = 25,Min = 0.1,Max = 100,Rounding = 1,Compact = true,}):OnChanged(function(State)
-        cursor.Radius = State
-    end)
-    CrosshairTab:AddSlider('crosshairthickness', {Text = 'thickness',Default = 1.5,Min = 0.1,Max = 10,Rounding = 1,Compact = true,}):OnChanged(function(State)
-        cursor.Thickness = State
-    end)
-    CrosshairTab:AddSlider('crosshairgapsize', {Text = 'gap',Default = 5,Min = 0,Max = 50,Rounding = 1,Compact = true,}):OnChanged(function(State)
-        cursor.Gap = State
-    end)
-    CrosshairTab:AddToggle('crosshairenablegap', {Text = 'math divide gap',Default = false,Callback = function(first)
-        cursor.TheGap = first
-    end})
-    CrosshairTab:AddToggle('crosshairenableoutline', {Text = 'outline',Default = false,Callback = function(first)
-        cursor.Outline = first
-    end})
-    CrosshairTab:AddToggle('crosshairenableresize', {Text = 'resize animation',Default = false,Callback = function(first)
-        cursor.Resize = first
-    end})
-    CrosshairTab:AddToggle('crosshairenabledot', {Text = 'dot',Default = false,Callback = function(first)
-        cursor.Dot = first
-    end})
+    CrosshairTab:CreateToggle({
+        Name = 'enable crosshair',
+        CurrentValue = false,
+        Flag = 'crosshairenable',
+        Callback = function(first)
+            cursor.Enabled = first
+        end
+    })
+    CrosshairTab:CreateColorPicker({
+        Name = 'crosshair color',
+        Color = Color3.new(1, 1, 1),
+        Flag = 'crosshaircolor',
+        Callback = function(Value)
+            cursor.Color = Value
+        end
+    })
+    CrosshairTab:CreateSlider({
+        Name = 'speed',
+        Range = {0.1, 15},
+        Increment = 0.1,
+        CurrentValue = 3,
+        Flag = 'crosshairspeed',
+        Callback = function(State)
+            cursor.Speed = State / 10
+        end
+    })
+    CrosshairTab:CreateSlider({
+        Name = 'radius',
+        Range = {0.1, 100},
+        Increment = 0.1,
+        CurrentValue = 25,
+        Flag = 'crosshairradius',
+        Callback = function(State)
+            cursor.Radius = State
+        end
+    })
+    CrosshairTab:CreateSlider({
+        Name = 'thickness',
+        Range = {0.1, 10},
+        Increment = 0.1,
+        CurrentValue = 1.5,
+        Flag = 'crosshairthickness',
+        Callback = function(State)
+            cursor.Thickness = State
+        end
+    })
+    CrosshairTab:CreateSlider({
+        Name = 'gap',
+        Range = {0, 50},
+        Increment = 1,
+        CurrentValue = 5,
+        Flag = 'crosshairgapsize',
+        Callback = function(State)
+            cursor.Gap = State
+        end
+    })
+    CrosshairTab:CreateToggle({
+        Name = 'math divide gap',
+        CurrentValue = false,
+        Flag = 'crosshairenablegap',
+        Callback = function(first)
+            cursor.TheGap = first
+        end
+    })
+    CrosshairTab:CreateToggle({
+        Name = 'outline',
+        CurrentValue = false,
+        Flag = 'crosshairenableoutline',
+        Callback = function(first)
+            cursor.Outline = first
+        end
+    })
+    CrosshairTab:CreateToggle({
+        Name = 'resize animation',
+        CurrentValue = false,
+        Flag = 'crosshairenableresize',
+        Callback = function(first)
+            cursor.Resize = first
+        end
+    })
+    CrosshairTab:CreateToggle({
+        Name = 'dot',
+        CurrentValue = false,
+        Flag = 'crosshairenabledot',
+        Callback = function(first)
+            cursor.Dot = first
+        end
+    })
 
     -- // Initilisation
     local lines = {}
@@ -1551,15 +1717,33 @@ do
     local mvb = MovementSection
     local bhop_enabled, speed = false, 55
     local forcesprint = false
-    mvb:AddToggle('speedhack_forcesprint', {Text = 'forcesprint',Default = false,Callback = function(first)
-        forcesprint = first
-    end})
-    mvb:AddToggle('speedhack_enabled', {Text = 'speedhack enabled',Default = false,Callback = function(first)
-        bhop_enabled = first
-    end})
-    mvb:AddSlider('speedhack_speed',{ Text = 'speed', Default = 55, Min = 55, Max = 70, Rounding = 0, Suffix = "sps", Compact = false }):OnChanged(function(State)
-        speed = State
-    end)
+    mvb:CreateToggle({
+        Name = 'forcesprint',
+        CurrentValue = false,
+        Flag = 'speedhack_forcesprint',
+        Callback = function(first)
+            forcesprint = first
+        end
+    })
+    mvb:CreateToggle({
+        Name = 'speedhack enabled',
+        CurrentValue = false,
+        Flag = 'speedhack_enabled',
+        Callback = function(first)
+            bhop_enabled = first
+        end
+    })
+    mvb:CreateSlider({
+        Name = 'speed',
+        Range = {55, 70},
+        Increment = 1,
+        CurrentValue = 55,
+        Suffix = "sps",
+        Flag = 'speedhack_speed',
+        Callback = function(State)
+            speed = State
+        end
+    })
     local niga, wtf = speed, 0
     local middle = trident.middlepart
     cheat.utility.new_renderstepped(LPH_JIT_MAX(function(delta)
