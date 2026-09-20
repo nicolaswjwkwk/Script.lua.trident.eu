@@ -1,3 +1,12 @@
+SWG_DiscordUser = "swim"
+    SWG_DiscordID = 1337
+    SWG_Private = true
+    SWG_Dev = false
+    SWG_Version = "free"
+    SWG_Title = 'free swimhub.xyz %s - %s | discord.gg/priv9'
+    SWG_ShortName = 'free'
+    SWG_FullName = 'ts'
+    SWG_FFA = false
 --- FABRICATED VALUES END!!!
 
 local clone = cloneref or function(v) return v end
@@ -84,22 +93,99 @@ end
 -- ============================================================
 -- cheat table (compatibility layer for original feature code)
 -- ============================================================
-
 local cheat = {
     Library = nil,
-    Toggles = {},
-    Options = {},
+    Toggles = nil,
+    Options = nil,
     ThemeManager = nil,
     SaveManager = nil,
-
     connections = {
         heartbeats = {},
         renderstepped = {}
     },
-
     drawings = {},
     hooks = {}
 }
+
+cheat.utility = {} do
+    cheat.utility.new_heartbeat = function(func)
+        local obj = {}
+        cheat.connections.heartbeats[func] = func
+        function obj:Disconnect()
+            if func then
+                cheat.connections.heartbeats[func] = nil
+                func = nil
+            end
+        end
+        return obj
+    end
+    cheat.utility.new_renderstepped = function(func)
+        local obj = {}
+        cheat.connections.renderstepped[func] = func
+        function obj:Disconnect()
+            if func then
+                cheat.connections.renderstepped[func] = nil
+                func = nil
+            end
+        end
+        return obj
+    end
+    cheat.utility.new_drawing = function(drawobj, args)
+        local obj = Drawing.new(drawobj)
+        for i, v in pairs(args) do
+            obj[i] = v
+        end
+        cheat.drawings[obj] = obj
+        return obj
+    end
+    cheat.utility.new_hook = function(f, newf, usecclosure)
+        if usecclosure then
+            local old; old = hookfunction(f, newcclosure(function(...)
+                return newf(old, ...)
+            end))
+            cheat.hooks[f] = old
+            return old
+        else
+            local old; old = hookfunction(f, function(...)
+                return newf(old, ...)
+            end)
+            cheat.hooks[f] = old
+            return old
+        end
+    end
+    local connection = RunService.Heartbeat:Connect(LPH_NO_VIRTUALIZE(function(delta)
+        for _, func in pairs(cheat.connections.heartbeats) do
+            func(delta)
+        end
+    end))
+    local connection1 = RunService.RenderStepped:Connect(LPH_NO_VIRTUALIZE(function(delta)
+        for _, func in pairs(cheat.connections.renderstepped) do
+            func(delta)
+        end
+    end))
+    cheat.utility.unload = function()
+        connection:Disconnect()
+        connection1:Disconnect()
+        for key, _ in pairs(cheat.connections.heartbeats) do
+            cheat.connections.heartbeats[key] = nil
+        end
+        for key, _ in pairs(cheat.connections.renderstepped) do
+            cheat.connections.renderstepped[key] = nil
+        end
+        for _, drawing in pairs(cheat.drawings) do
+            drawing:Remove()
+            cheat.drawings[_] = nil
+        end
+        for hooked, original in pairs(cheat.hooks) do
+            if type(original) == "function" then
+                hookfunction(hooked, clonefunction(original))
+            else
+                hookmetamethod(original["instance"], original["metamethod"], clonefunction(original["func"]))
+            end
+        end
+    end
+end
+
 -- Rayfield replaces the old custom UI library; provide minimal shims so
 -- the rest of the script (cheat.Library, cheat.ThemeManager, cheat.SaveManager)
 -- can be used without the old library_main / library_theme / library_save.
@@ -783,155 +869,110 @@ local aimbot = {
 
 do
     local validcharacters = {}
-local _omHead = trident.original_model and trident.original_model:FindFirstChild("Head")
-local hbc, original_size, hbsize =
-    nil,
-    _omHead and _omHead.Size or _Vector3new(2, 1, 1),
-    _Vector3new(0.5, 1, 0.5)
-
-local dynamic, alwayshead = false, false
-local hitboxheadsizex, hitboxheadsizey, hitboxheadtransparency, cancollide =
-    10, 10, 0.5, false
-
-local function addtovc(obj)
-    if not obj then return end
-    if not obj:FindFirstChild("Head") and not obj:FindFirstChild("LowerTorso") then
-        return
+    local _omHead = trident.original_model and trident.original_model:FindFirstChild("Head")
+    local hbc, original_size, hbsize = nil, _omHead and _omHead.Size or _Vector3new(2, 1, 1), _Vector3new(0.5, 1, 0.5)
+    local dynamic, alwayshead = false, false
+    local hitboxheadsizex, hitboxheadsizey, hitboxheadtransparency, cancollide = 10, 10, 0.5, false
+    local function addtovc(obj)
+        if not obj then return end
+        if not obj:FindFirstChild("Head") and not obj:FindFirstChild("LowerTorso") then return end
+        validcharacters[obj] = obj
     end
 
-    validcharacters[obj] = obj
-end
+    local function removefromvc(obj)
+        if not validcharacters[obj] then return end
+        validcharacters[obj] = nil
+    end
 
-local function removefromvc(obj)
-    if not validcharacters[obj] then return end
-    validcharacters[obj] = nil
-end
+    for i, v in next, workspace:GetChildren() do addtovc(v) end
+    workspace.ChildAdded:Connect(addtovc);
+    workspace.ChildRemoved:Connect(removefromvc);
 
-for i, v in next, workspace:GetChildren() do
-    addtovc(v)
-end
-
-workspace.ChildAdded:Connect(addtovc)
-workspace.ChildRemoved:Connect(removefromvc)
-
--- ============================================================
--- HITBOX
--- IMPORTANTE:
--- CreateToggle/CreateSlider pertencem à TAB, não à SECTION.
--- ============================================================
-
-CombatTab:CreateToggle({
-    name = "hitbox expander",
-    value = false,
-    flag = "hitbox_enabled",
-
-    callback = function(value)
-        aimbot.hitboxes = value
-
-        if hbc then
-            hbc:Disconnect()
-            hbc = nil
-        end
-
-        if value then
-            hbc = cheat.utility.new_heartbeat(function()
-                local trans = hitboxheadtransparency
-
-                for i, v in validcharacters do
-                    local primpart = v and _FindFirstChild(v, "Head")
-
-                    if primpart then
-                        primpart.Size = hbsize
-                        primpart.Transparency = trans
-                        primpart.CanCollide = cancollide
+    local hbb = HitboxSection
+    hbb:CreateToggle({
+        Name = 'hitbox expander',
+        CurrentValue = false,
+        Flag = 'hitbox_enabled',
+        Callback = function(value)
+            aimbot.hitboxes = value
+            if hbc then hbc:Disconnect() end
+            if value then
+                hbc = cheat.utility.new_heartbeat(function()
+                    local trans = hitboxheadtransparency
+                    for i, v in validcharacters do
+                        local primpart = v and _FindFirstChild(v, 'Head')
+                        if primpart then
+                            primpart.Size = hbsize
+                            primpart.Transparency = trans
+                            primpart.CanCollide = cancollide
+                        end
                     end
-                end
-            end)
-        else
-            for i, v in validcharacters do
-                local primpart = v and _FindFirstChild(v, "Head")
-
-                if primpart then
-                    primpart.Size = original_size
-                    primpart.Transparency = 0
-                    primpart.CanCollide = true
+                end)
+            else
+                if hbc then hbc:Disconnect() end
+                for i, v in validcharacters do
+                    local primpart = v and _FindFirstChild(v, 'Head')
+                    if primpart then
+                        primpart.Size = original_size
+                        primpart.Transparency = 0
+                        primpart.CanCollide = true
+                    end
                 end
             end
         end
-    end
-})
-
-CombatTab:CreateSlider({
-    name = "transparency",
-    range = {0, 1},
-    increment = 0.1,
-    value = 0.5,
-    flag = "hitbox_head_transparency",
-
-    callback = function(State)
-        hitboxheadtransparency = State
-    end
-})
-
-CombatTab:CreateSlider({
-    name = "size x",
-    range = {1, 15},
-    increment = 0.1,
-    value = 10,
-    flag = "hitbox_head_size_x",
-
-    callback = function(State)
-        hitboxheadsizex = State
-        hbsize = _Vector3new(
-            hitboxheadsizex,
-            hitboxheadsizey,
-            hitboxheadsizex
-        )
-    end
-})
-
-CombatTab:CreateSlider({
-    name = "size y",
-    range = {1, 15},
-    increment = 0.1,
-    value = 10,
-    flag = "hitbox_head_size_y",
-
-    callback = function(State)
-        hitboxheadsizey = State
-        hbsize = _Vector3new(
-            hitboxheadsizex,
-            hitboxheadsizey,
-            hitboxheadsizex
-        )
-    end
-})
-
+    })
+    hbb:CreateSlider({
+        Name = 'transparency',
+        Range = {0, 1},
+        Increment = 0.1,
+        CurrentValue = 0.5,
+        Flag = 'hitbox_head_transparency',
+        Callback = function(State)
+            hitboxheadtransparency = State
+        end
+    })
+    hbb:CreateSlider({
+        Name = 'size x',
+        Range = {1, 15},
+        Increment = 0.1,
+        CurrentValue = 10,
+        Flag = 'hitbox_head_size_x',
+        Callback = function(State)
+            hitboxheadsizex = State
+            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
+        end
+    })
+    hbb:CreateSlider({
+        Name = 'size y',
+        Range = {1, 15},
+        Increment = 0.1,
+        CurrentValue = 10,
+        Flag = 'hitbox_head_size_y',
+        Callback = function(State)
+            hitboxheadsizey = State
+            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
+        end
+    })
+end
 do
-    -- PlayerESPSection é uma SECTION.
-    -- Os elementos precisam ser criados na TAB que contém essa section.
-    local espb = VisualsTab
+    local espb = PlayerESPSection
     local es = cheat.EspLibrary.settings.enemy
-
     espb:CreateSlider({
-        name = "esp font size",
-        range = {1, 30},
-        increment = 1,
-        value = 13,
-        flag = "espfontsize",
-
-        callback = function(State)
+        Name = 'esp font size',
+        Range = {1, 30},
+        Increment = 1,
+        CurrentValue = 13,
+        Flag = 'espfontsize',
+        Callback = function(State)
             cheat.EspLibrary.main_settings.textSize = State
             cheat.EspLibrary.icaca()
         end
     })
-
     espb:CreateToggle({
-        name = "simpler corner calc (fps)",
-        value = false,
-        flag = "espsimplecalc",
-
-        callback = function(first)
+        Name = 'simpler corner calc (fps)',
+        CurrentValue = false,
+        Flag = 'espsimplecalc',
+        Callback = function(first)
             cheat.EspLibrary.main_settings.simplecalc = first
             cheat.EspLibrary.icaca()
         end
@@ -1276,12 +1317,14 @@ do
         Position = waterpos + Vector2.new(2, 2),
         Size = Vector2.new(text.TextBounds.X + 6, text.TextBounds.Y + 6),
         Color = Color3.new(0,0,0),
-        Filled = true,
+Filled = true,
         Thickness = 0,
     });
-    if canuseimages then rawget(gradr, "_frame").Image = getcustomasset("swimhub/new/files/grad90r.png"); end
-    if canuseimages then rawget(gradl, "_frame").Image = getcustomasset("swimhub/new/files/grad90l.png"); end
-    local hue1, hue2, fpstimer, fps, finalfps = 0, 0.15, tick(), 0, 60;
+    if canuseimages then
+        -- Gradient images disabled (assets removed).
+    end
+end
+local hue1, hue2, fpstimer, fps, finalfps = 0, 0.15, tick(), 0, 60;
     cheat.utility.new_renderstepped(LPH_JIT_MAX(function(delta)
         fps = fps + 1;
         if fpstimer + 1 <= tick() then
