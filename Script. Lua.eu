@@ -1,22 +1,25 @@
 --[[
     ================================================================
-    OVERSEEK.WTF - RAYFIELD GEN2 / STABLE PRO LAYOUT
+    OVERSEEK.WTF - RAYFIELD GEN2 / STABLE PRO LAYOUT - V3
     ================================================================
 
     Correções desta versão:
-      1. Remove CreateParagraph (não existe no Gen2 atual).
+      1. Remove dependências de elementos que não são usados por esta versão Gen2.
       2. Remove nested CreateGroup do layout principal para evitar o erro
-         "AbsoluteWindowSize is not a valid member of Frame" observado no runtime.
+         uso de nested groups que causava conflitos de layout no runtime.
       3. ESP 2D usa os BODY PARTS do personagem, em vez de offsets fixos.
          Isso deixa a caixa proporcional ao corpo e reduz corretamente com a distância.
       4. O nome/distância ficam presos no topo da caixa, não na cabeça.
       5. FOV é um círculo de UI real, reposicionado no centro da viewport a cada frame.
       6. Aim Point "Head Top" mira na parte superior da cabeça.
       7. Aimbot usa câmera local e o resolver usa a mesma lógica de alvo/FOV.
-      8. Trident Adapter fica separado como verificação de compatibilidade; não executa
-         hooks de projétil de terceiros.
-      9. Save/Load usa a API nativa do Rayfield Gen2.
-     10. Quick Bar + atalhos ficam separados da lógica para facilitar manutenção.
+      8. Trident Adapter possui gates de disponibilidade e validação defensiva; não instala
+         hooks de projétil externos nesta camada universal.
+      9. Save/Load é estritamente manual: nada é salvo sem ação explícita do usuário.
+     10. Sistema de inicialização, watchdog, error guard, cleanup idempotente e diagnóstico.
+     11. Team resolver separado da ativação de mira; FOV/ESP não dependem de Aim Enabled.
+     12. Linha de alvo dentro do FOV, cores por relação/time e profundidade do Highlight.
+     13. Aba Developer protegida por chave local e sem exposição do resolver por padrão.
 
     Compatibilidade:
       - UI: Rayfield Gen2 estável.
@@ -34,6 +37,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local TeamsService = game:GetService("Teams")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -43,10 +47,64 @@ local SCRIPT_RENDER_NAME = "OverSeek_Aimbot_Render"
 local SCRIPT_CONNECTION_PREFIX = "OverSeek_"
 
 -- ================================================================
+-- RUNTIME ENV / PREVIOUS INSTANCE CLEANUP
+-- ================================================================
+
+local RuntimeEnv = _G
+pcall(function()
+    if typeof(getgenv) == "function" then
+        local env = getgenv()
+        if type(env) == "table" then
+            RuntimeEnv = env
+        end
+    end
+end)
+
+local function safeInvoke(label, callback, ...)
+    local args = table.pack(...)
+
+    local ok, result = xpcall(function()
+        return callback(table.unpack(args, 1, args.n))
+    end, function(err)
+        local message = tostring(err)
+        pcall(function()
+            if debug and debug.traceback then
+                message = debug.traceback(message, 2)
+            end
+        end)
+        return message
+    end)
+
+    if not ok then
+        return false, result
+    end
+
+    return true, result
+end
+
+-- A previous instance must release its own render binding/overlays first.
+pcall(function()
+    if type(RuntimeEnv.OverSeek_Cleanup) == "function" then
+        RuntimeEnv.OverSeek_Cleanup()
+    end
+end)
+
+RuntimeEnv.OverSeek_Cleanup = nil
+
+-- ================================================================
 -- RAYFIELD GEN2
 -- ================================================================
 
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+local rayfieldOk, Rayfield = safeInvoke(
+    "Rayfield load",
+    function()
+        return loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+    end
+)
+
+if not rayfieldOk or not Rayfield then
+    error("OverSeek: falha ao carregar o Rayfield Gen2.")
+end
 
 local Window = Rayfield:CreateWindow({
     name = "OverSeek.wtf",
@@ -56,8 +114,8 @@ local Window = Rayfield:CreateWindow({
     sidebarLayout = true,
     ToggleUIKeybind = Enum.KeyCode.RightShift,
     configuration = {
-        autoSave = true,
-        autoLoad = true,
+        autoSave = false,
+        autoLoad = false,
         fileName = "OverSeek_Pro",
     },
 })
@@ -67,7 +125,17 @@ local Window = Rayfield:CreateWindow({
 -- ================================================================
 
 local State = {
-    -- Aim
+    -- Global / lifecycle
+    SystemEnabled = false,
+    AutoValidation = true,
+    AutoRecovery = true,
+    DiagnosticsOverlay = true,
+    ErrorGuard = true,
+    RuntimeProfile = "Auto", -- Auto / Universal / Trident
+    ValidationInterval = 2,
+    ESPUpdateRate = 30,
+
+    -- Aim / target resolver
     AimMode = "Off", -- Off / Aimbot / Silent Aim (Trident)
     AimEnabled = false,
     AimSmooth = 8,
@@ -75,64 +143,261 @@ local State = {
     HitPart = "Head",
     FOVRadius = 175,
     FOVCircle = true,
+    FOVTargetLine = true,
+    FOVTargetDot = true,
+    FOVLineThickness = 1.5,
     TargetSleeping = false,
-    Teammates = false,
+    TeamFilter = "Enemies Only", -- All / Enemies Only / Teammates Only
+    Teammates = false, -- compatibility flag; synchronized with TeamFilter
+    TeamColorMode = "Auto", -- Auto / Relationship / Custom
+    FallbackGroupId = 0,
 
     -- ESP
     ESPEnabled = false,
     Box = true,
     CornerBoxes = true,
     Outline = false,
+    OutlineDepth = "AlwaysOnTop", -- AlwaysOnTop / Occluded
     ShowName = true,
     ShowDistance = true,
+    ShowRelationship = false,
     ShowSleeping = false,
     ShowScientists = false,
     ShowGun = false,
     RenderDistance = 1000,
     Snapline = false,
+    SnaplineThickness = 1.5,
+    InfoTextSize = 13,
+    MinBoxPixels = 6,
 
-    -- Hitbox visualizer
+    -- Appearance
+    AllyColor = Color3.fromRGB(70, 220, 120),
+    EnemyColor = Color3.fromRGB(255, 90, 90),
+    NeutralColor = Color3.fromRGB(0, 150, 255),
+    FOVColor = Color3.fromRGB(0, 150, 255),
+    NPCColor = Color3.fromRGB(255, 190, 60),
+
+    -- Hitbox visualizer (visual only)
     HitboxVisualizer = false,
     HitboxPart = "Head",
     HitboxX = 5,
     HitboxY = 5,
     HitboxZ = 5,
 
-    -- UI
+    -- UI / config
     Notifications = true,
     QuickBar = true,
+    ManualSaveOnly = true,
+    ExportResolver = false,
+
+    -- Developer
+    DevUnlocked = false,
 }
+
 
 local UI = {}
 local Connections = {}
 local ESP = {}
 local HitboxVisuals = {}
+local NPCESP = {}
+
+-- Forward declarations for functions defined before the tabs/quick bar exist.
+local Combat, Visual, Misc, Settings, Developer
+local QuickBar
+local RuntimeStatusParagraph
 
 local Running = true
+local Initialized = false
 local FPSAccumulator = 0
 local FPSFrames = 0
 local CurrentFPS = 0
 local ESPAccumulator = 0
 local NPCAccumulator = 0
+local ValidationAccumulator = 0
+local RuntimeStartedAt = os.clock()
+local RuntimeErrorCount = 0
+local LastRuntimeError = "none"
+local LastRuntimeAction = "boot"
+local RuntimeErrors = {}
+local RuntimeLog = {}
+local RecoveryInProgress = false
+local RelationshipWorker = nil
+
+-- Forward-declared UI labels used by the error guard.
+local RuntimeStatusText
+local RuntimeLogText
+local RuntimeDiagnosticsText
 
 -- ================================================================
--- UTILITY
+-- UTILITY / ERROR GUARD / LIFECYCLE
 -- ================================================================
 
-local function connect(signal, callback)
-    local c = signal:Connect(callback)
-    table.insert(Connections, c)
-    return c
+local NOOP = function() end
+
+local function pushRuntimeLog(level, message)
+    local stamp = os.date("%H:%M:%S")
+    local line = string.format("[%s] [%s] %s", stamp, level, tostring(message))
+
+    table.insert(RuntimeLog, 1, line)
+    while #RuntimeLog > 32 do
+        table.remove(RuntimeLog)
+    end
+
+    LastRuntimeAction = tostring(message)
+
+    if RuntimeLogText then
+        RuntimeLogText.Text = table.concat(RuntimeLog, "\n")
+    end
+
+    if RuntimeStatusText then
+        RuntimeStatusText.Text = string.format(
+            "OverSeek.wtf | %d FPS | %s | ERR %d",
+            CurrentFPS,
+            State.SystemEnabled and "READY" or "STANDBY",
+            RuntimeErrorCount
+        )
+    end
+end
+
+local function pushRuntimeError(label, message)
+    RuntimeErrorCount += 1
+    LastRuntimeError = string.format("%s: %s", tostring(label), tostring(message))
+
+    table.insert(RuntimeErrors, 1, LastRuntimeError)
+    while #RuntimeErrors > 12 do
+        table.remove(RuntimeErrors)
+    end
+
+    pushRuntimeLog("ERROR", LastRuntimeError)
+
+    if RuntimeDiagnosticsText then
+        RuntimeDiagnosticsText.Text = string.format(
+            "Errors: %d | Last: %s",
+            RuntimeErrorCount,
+            LastRuntimeError
+        )
+    end
+end
+
+local function safeCall(label, callback, ...)
+    if type(callback) ~= "function" then
+        return false, "callback inválido"
+    end
+
+    local args = table.pack(...)
+    local ok, result = xpcall(function()
+        return callback(table.unpack(args, 1, args.n))
+    end, function(err)
+        local message = tostring(err)
+        pcall(function()
+            if debug and debug.traceback then
+                message = debug.traceback(message, 2)
+            end
+        end)
+        return message
+    end)
+
+    if not ok then
+        pushRuntimeError(label, result)
+
+        if State.ErrorGuard and State.AutoRecovery and RuntimeErrorCount >= 5 then
+            State.SystemEnabled = false
+            Initialized = false
+            pushRuntimeLog("RECOVERY", "Sistema colocado em STANDBY após erros repetidos.")
+        end
+
+        return false, result
+    end
+
+    return true, result
+end
+
+local function connect(signal, callback, label)
+    if not signal or type(callback) ~= "function" then
+        pushRuntimeError(label or "Connect", "signal/callback inválido")
+        return nil
+    end
+
+    local connection
+    local ok, result = safeCall(label or "Connect", function()
+        connection = signal:Connect(function(...)
+            safeCall(
+                label or "Connection",
+                callback,
+                ...
+            )
+        end)
+        return connection
+    end)
+
+    if ok and connection then
+        table.insert(Connections, connection)
+        return connection
+    end
+
+    return nil
+end
+
+local function disconnectConnection(connection)
+    if not connection then
+        return
+    end
+
+    pcall(function()
+        if connection.Connected then
+            connection:Disconnect()
+        end
+    end)
 end
 
 local function disconnectAll()
     for _, connection in ipairs(Connections) do
-        pcall(function()
-            connection:Disconnect()
-        end)
+        disconnectConnection(connection)
     end
 
     table.clear(Connections)
+end
+
+local function destroyInstance(instance)
+    if instance then
+        pcall(function()
+            instance:Destroy()
+        end)
+    end
+end
+
+local function unbindRenderLoop()
+    pcall(function()
+        RunService:UnbindFromRenderStep(SCRIPT_RENDER_NAME)
+    end)
+end
+
+local function clearRuntimeObjects()
+    unbindRenderLoop()
+    disconnectAll()
+
+    for player in pairs(ESP) do
+        local data = ESP[player]
+        if data then
+            destroyInstance(data.Root)
+            destroyInstance(data.Snapline)
+            destroyInstance(data.Highlight)
+        end
+        ESP[player] = nil
+    end
+
+    for player in pairs(HitboxVisuals) do
+        destroyInstance(HitboxVisuals[player])
+        HitboxVisuals[player] = nil
+    end
+
+    for model in pairs(NPCESP) do
+        local data = NPCESP[model]
+        if data then
+            destroyInstance(data.Root)
+        end
+        NPCESP[model] = nil
+    end
 end
 
 local function notify(title, content)
@@ -140,20 +405,29 @@ local function notify(title, content)
         return
     end
 
-    pcall(function()
-        Window:Notify({
-            title = title,
-            content = content,
-        })
+    safeCall("Notification", function()
+        if Rayfield.Notify then
+            Rayfield:Notify({
+                title = title,
+                content = content,
+            })
+        elseif Window and Window.Notify then
+            Window:Notify({
+                title = title,
+                content = content,
+            })
+        end
     end)
 end
 
 local function clamp(number, minimum, maximum)
-    return math.max(minimum, math.min(maximum, number))
+    local n = tonumber(number) or minimum
+    return math.max(minimum, math.min(maximum, n))
 end
 
 local function round(number)
-    return math.floor(number + 0.5)
+    local n = tonumber(number) or 0
+    return math.floor(n + 0.5)
 end
 
 local function getCamera()
@@ -162,7 +436,7 @@ local function getCamera()
 end
 
 local function getGuiParent()
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
 
     if playerGui then
         return playerGui
@@ -174,7 +448,22 @@ local function getGuiParent()
         parent = CoreGui
     end)
 
-    return parent or LocalPlayer:WaitForChild("PlayerGui")
+    return parent
+end
+
+local function getPlatformName()
+    if UserInputService.TouchEnabled and UserInputService.KeyboardEnabled then
+        return "Touch + Keyboard"
+    elseif UserInputService.TouchEnabled then
+        return "Touch"
+    elseif UserInputService.GamepadEnabled then
+        return "Gamepad"
+    end
+    return "Keyboard / Mouse"
+end
+
+local function runtimeUptime()
+    return math.max(0, os.clock() - RuntimeStartedAt)
 end
 
 -- ================================================================
@@ -280,7 +569,7 @@ local function isScientist(character)
         or character:GetAttribute("IsScientist") == true
 end
 
-local function getDistance(character)
+local function getDistanceSquared(character)
     local localCharacter = getCharacter(LocalPlayer)
     local localRoot = getRoot(localCharacter)
     local targetRoot = getRoot(character)
@@ -289,23 +578,195 @@ local function getDistance(character)
         return math.huge
     end
 
-    return (localRoot.Position - targetRoot.Position).Magnitude
+    local delta = localRoot.Position - targetRoot.Position
+    return delta.X * delta.X + delta.Y * delta.Y + delta.Z * delta.Z
 end
 
-local function isTeammate(player)
+local function getDistance(character)
+    local squared = getDistanceSquared(character)
+    if squared == math.huge then
+        return math.huge
+    end
+    return math.sqrt(squared)
+end
+
+local RelationshipCache = {}
+local RELATIONSHIP_CACHE_TTL = 5
+local NativeTeamSystem = false
+local NativeTeamSystemCheckedAt = 0
+local NATIVE_TEAM_CHECK_TTL = 2
+
+local function hasNativeTeamSystem()
+    local now = os.clock()
+
+    if now - NativeTeamSystemCheckedAt <= NATIVE_TEAM_CHECK_TTL then
+        return NativeTeamSystem
+    end
+
+    local hasTeams = false
+
+    if LocalPlayer and (LocalPlayer.Team ~= nil) then
+        hasTeams = true
+    else
+        pcall(function()
+            hasTeams = #TeamsService:GetTeams() > 0
+        end)
+    end
+
+    NativeTeamSystem = hasTeams
+    NativeTeamSystemCheckedAt = now
+
+    return NativeTeamSystem
+end
+
+local function playerHasTeamMetadata(player)
+    if not player then
+        return false
+    end
+
+    return hasNativeTeamSystem()
+        or player.Team ~= nil
+        or LocalPlayer.Team ~= nil
+end
+
+local function sameConfiguredGroup(player)
+    local groupId = tonumber(State.FallbackGroupId) or 0
+
+    if groupId <= 0 or not player or not LocalPlayer then
+        return false
+    end
+
+    local localRank = 0
+    local targetRank = 0
+
+    local ok = pcall(function()
+        localRank = LocalPlayer:GetRankInGroup(groupId)
+        targetRank = player:GetRankInGroup(groupId)
+    end)
+
+    return ok and localRank > 0 and targetRank > 0
+end
+
+local function isFriend(player)
     if not player or not LocalPlayer then
         return false
     end
 
+    local result = false
+    local ok = pcall(function()
+        result = LocalPlayer:IsFriendsWith(player.UserId)
+    end)
+
+    return ok and result == true
+end
+
+local function getRelationship(player)
+    if not player or player == LocalPlayer then
+        return "Self"
+    end
+
     if player.Team ~= nil and LocalPlayer.Team ~= nil then
-        return player.Team == LocalPlayer.Team
+        return player.Team == LocalPlayer.Team and "Teammate" or "Enemy"
     end
 
-    if player.TeamColor ~= nil and LocalPlayer.TeamColor ~= nil then
-        return player.TeamColor == LocalPlayer.TeamColor
+    if playerHasTeamMetadata(player)
+        and player.TeamColor ~= nil
+        and LocalPlayer.TeamColor ~= nil then
+        return player.TeamColor == LocalPlayer.TeamColor and "Teammate" or "Enemy"
     end
 
-    return false
+    local cached = RelationshipCache[player]
+
+    if cached then
+        return cached.value
+    end
+
+    -- No native team information and no background relationship result yet.
+    return "Enemy"
+end
+
+local function isTeammate(player)
+    return getRelationship(player) == "Teammate"
+end
+
+local function shouldIncludeByTeam(player)
+    local relationship = getRelationship(player)
+
+    if State.TeamFilter == "All" then
+        return true
+    end
+
+    if State.TeamFilter == "Teammates Only" then
+        return relationship == "Teammate"
+    end
+
+    return relationship ~= "Teammate"
+end
+
+local function getESPColor(player)
+    local relationship = getRelationship(player)
+
+    if relationship == "Teammate" then
+        return State.AllyColor
+    end
+
+    if relationship == "Enemy" then
+        if State.TeamColorMode == "Relationship" then
+            return State.EnemyColor
+        end
+
+        if State.TeamColorMode == "Auto" then
+            local teamColor = player and player.TeamColor
+            if teamColor and playerHasTeamMetadata(player) then
+                return teamColor.Color
+            end
+            return State.EnemyColor
+        end
+
+        return State.EnemyColor
+    end
+
+    return State.NeutralColor
+end
+
+local function refreshRelationshipCache()
+    if not LocalPlayer then
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and not playerHasTeamMetadata(player) then
+            local relationship = "Enemy"
+
+            if sameConfiguredGroup(player) or isFriend(player) then
+                relationship = "Teammate"
+            end
+
+            RelationshipCache[player] = {
+                time = os.clock(),
+                value = relationship,
+            }
+        end
+    end
+end
+
+local function startRelationshipWorker()
+    if RelationshipWorker then
+        return
+    end
+
+    RelationshipWorker = task.spawn(function()
+        while Running do
+            task.wait(5)
+            if not Running then
+                break
+            end
+
+            pcall(refreshRelationshipCache)
+        end
+
+        RelationshipWorker = nil
+    end)
 end
 
 local function withinRenderDistance(character)
@@ -391,7 +852,7 @@ local function validTarget(player, character)
         return false
     end
 
-    if not State.Teammates and isTeammate(player) then
+    if not shouldIncludeByTeam(player) then
         return false
     end
 
@@ -402,12 +863,16 @@ local function validTarget(player, character)
     return true
 end
 
-local function getClosestTarget()
-    if not State.AimEnabled then
+local function findClosestTarget(requireAimEnabled)
+    if not State.SystemEnabled then
         return nil
     end
 
-    if State.AimMode == "Off" then
+    if requireAimEnabled and not State.AimEnabled then
+        return nil
+    end
+
+    if requireAimEnabled and State.AimMode == "Off" then
         return nil
     end
 
@@ -448,8 +913,10 @@ local function getClosestTarget()
                                 player = player,
                                 character = character,
                                 position = aimPosition,
+                                screenPoint = point,
                                 screenDistance = screenDistance,
                                 worldDistance = getDistance(character),
+                                relationship = getRelationship(player),
                             }
                         end
                     end
@@ -461,39 +928,45 @@ local function getClosestTarget()
     return best
 end
 
--- Exports target resolver so an experience you control can consume the same target logic.
-local ExportEnvironment = _G
+local function getClosestTarget()
+    return findClosestTarget(true)
+end
 
-pcall(function()
-    if typeof(getgenv) == "function" then
-        local env = getgenv()
-
-        if type(env) == "table" then
-            ExportEnvironment = env
-        end
+-- Resolver export stays disabled by default to reduce global surface area.
+local function updateResolverExport()
+    if State.ExportResolver and State.DevUnlocked then
+        RuntimeEnv.OverSeek_GetTarget = getClosestTarget
+    else
+        pcall(function()
+            if RuntimeEnv.OverSeek_GetTarget then
+                RuntimeEnv.OverSeek_GetTarget = nil
+            end
+        end)
     end
-end)
-
-ExportEnvironment.OverSeek_GetTarget = getClosestTarget
+end
 
 -- ================================================================
 -- TRIDENT ADAPTER CHECK
 -- ================================================================
 
 local function checkTridentAdapter()
-    if game.PlaceId ~= TRIDENT_PLACE_ID then
-        return false, "Outro jogo detectado. O adapter de Trident não é usado aqui."
+    local placeMatches = game.PlaceId == TRIDENT_PLACE_ID
+
+    if State.RuntimeProfile == "Universal" then
+        return true, "Perfil Universal selecionado. Sem dependências internas de Trident."
     end
 
-    -- Only report whether the environment exposes the optional primitives.
-    -- No projectile hook is installed by this universal layer.
-    local available = {}
+    if State.RuntimeProfile == "Trident" and not placeMatches then
+        return false, "Perfil Trident selecionado, mas o PlaceId atual não corresponde ao adapter."
+    end
 
-    for _, name in ipairs({
-        "getactors",
-        "run_on_actor",
-        "hookfunction",
-    }) do
+    if not placeMatches then
+        return true, "Outro jogo detectado. Perfil Auto/Universal disponível; Trident não será ativado."
+    end
+
+    local checks = {}
+
+    local function hasFunction(name)
         local exists = false
 
         pcall(function()
@@ -509,32 +982,62 @@ local function checkTridentAdapter()
             end)
         end
 
-        table.insert(available, {
+        return exists
+    end
+
+    for _, name in ipairs({
+        "getactors",
+        "run_on_actor",
+        "hookfunction",
+    }) do
+        table.insert(checks, {
             name = name,
-            ok = exists,
+            ok = hasFunction(name),
         })
     end
 
+    local playerGuiOk = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui") ~= nil
+    local cameraOk = getCamera() ~= nil
     local missing = {}
 
-    for _, item in ipairs(available) do
+    if not playerGuiOk then
+        table.insert(missing, "PlayerGui")
+    end
+
+    if not cameraOk then
+        table.insert(missing, "CurrentCamera")
+    end
+
+    for _, item in ipairs(checks) do
         if not item.ok then
             table.insert(missing, item.name)
         end
     end
 
-    if #missing > 0 then
-        return false,
-            "Trident detectado, mas o ambiente não expõe: " .. table.concat(missing, ", ")
+    if State.RuntimeProfile == "Trident" and #missing > 0 then
+        return false, "Trident detectado, mas faltam primitivas opcionais: " .. table.concat(missing, ", ")
     end
 
-    return true,
-        "Trident detectado e primitivas opcionais estão disponíveis."
+    if #missing > 0 then
+        return true, "Trident detectado; adapter de compatibilidade em CHECK (sem hooks instalados)."
+    end
+
+    return true, "Trident detectado e ambiente expõe as primitivas opcionais; adapter permanece somente como verificação."
 end
 
 -- ================================================================
 -- OVERLAY
 -- ================================================================
+
+local GuiParent = getGuiParent()
+
+if not GuiParent and LocalPlayer then
+    GuiParent = LocalPlayer:WaitForChild("PlayerGui", 10)
+end
+
+if not GuiParent then
+    error("OverSeek: PlayerGui/CoreGui indisponível para criar o overlay.")
+end
 
 local Overlay = Instance.new("ScreenGui")
 Overlay.Name = "OverSeek_Overlay"
@@ -542,7 +1045,11 @@ Overlay.ResetOnSpawn = false
 Overlay.IgnoreGuiInset = true
 Overlay.DisplayOrder = 999999
 Overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-Overlay.Parent = getGuiParent()
+Overlay.Parent = GuiParent
+
+local AdornmentFolder = Instance.new("Folder")
+AdornmentFolder.Name = "OverSeek_Adornments"
+AdornmentFolder.Parent = Workspace
 
 -- ================================================================
 -- FOV CIRCLE
@@ -564,8 +1071,32 @@ FOVCorner.Parent = FOVCircle
 local FOVStroke = Instance.new("UIStroke")
 FOVStroke.Thickness = 1.5
 FOVStroke.Transparency = 0
-FOVStroke.Color = Color3.fromRGB(0, 150, 255)
+FOVStroke.Color = State.FOVColor
 FOVStroke.Parent = FOVCircle
+
+local FOVTargetLine = Instance.new("Frame")
+FOVTargetLine.Name = "FOVTargetLine"
+FOVTargetLine.AnchorPoint = Vector2.new(0, 0.5)
+FOVTargetLine.BackgroundTransparency = 0
+FOVTargetLine.BorderSizePixel = 0
+FOVTargetLine.Size = UDim2.fromOffset(0, State.FOVLineThickness)
+FOVTargetLine.Visible = false
+FOVTargetLine.ZIndex = 99
+FOVTargetLine.Parent = Overlay
+
+local FOVTargetDot = Instance.new("Frame")
+FOVTargetDot.Name = "FOVTargetDot"
+FOVTargetDot.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVTargetDot.BackgroundColor3 = State.FOVColor
+FOVTargetDot.BorderSizePixel = 0
+FOVTargetDot.Size = UDim2.fromOffset(7, 7)
+FOVTargetDot.Visible = false
+FOVTargetDot.ZIndex = 100
+FOVTargetDot.Parent = Overlay
+
+local FOVDotCorner = Instance.new("UICorner")
+FOVDotCorner.CornerRadius = UDim.new(1, 0)
+FOVDotCorner.Parent = FOVTargetDot
 
 local function updateFOV()
     local camera = getCamera()
@@ -589,9 +1120,65 @@ local function updateFOV()
         diameter
     )
 
+    FOVStroke.Color = State.FOVColor
     FOVCircle.Visible =
-        State.FOVCircle
+        State.SystemEnabled
+        and State.FOVCircle
         and State.FOVRadius > 0
+
+    FOVTargetLine.Visible = false
+    FOVTargetDot.Visible = false
+end
+
+local function updateFOVTargetIndicator()
+    if not State.SystemEnabled then
+        FOVTargetLine.Visible = false
+        FOVTargetDot.Visible = false
+        return
+    end
+
+    if not State.FOVTargetLine and not State.FOVTargetDot then
+        FOVTargetLine.Visible = false
+        FOVTargetDot.Visible = false
+        return
+    end
+
+    local camera = getCamera()
+    if not camera then
+        FOVTargetLine.Visible = false
+        FOVTargetDot.Visible = false
+        return
+    end
+
+    local target = findClosestTarget(false)
+    if not target or not target.screenPoint then
+        FOVTargetLine.Visible = false
+        FOVTargetDot.Visible = false
+        return
+    end
+
+    local center = getScreenCenter()
+    local destination = target.screenPoint
+    local delta = destination - center
+    local length = delta.Magnitude
+
+    if State.FOVTargetLine and length > 2 then
+        FOVTargetLine.Position = UDim2.fromOffset(center.X, center.Y)
+        FOVTargetLine.Size = UDim2.fromOffset(length, clamp(State.FOVLineThickness, 1, 5))
+        FOVTargetLine.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+        FOVTargetLine.BackgroundColor3 = getESPColor(target.player)
+        FOVTargetLine.Visible = true
+    else
+        FOVTargetLine.Visible = false
+    end
+
+    if State.FOVTargetDot then
+        FOVTargetDot.Position = UDim2.fromOffset(destination.X, destination.Y)
+        FOVTargetDot.BackgroundColor3 = getESPColor(target.player)
+        FOVTargetDot.Visible = true
+    else
+        FOVTargetDot.Visible = false
+    end
 end
 
 -- ================================================================
@@ -643,6 +1230,68 @@ StatusText.TextSize = 12
 StatusText.Text = "  OverSeek.wtf | -- FPS"
 StatusText.TextXAlignment = Enum.TextXAlignment.Left
 StatusText.Parent = StatusBar
+
+local RuntimePanel = Instance.new("Frame")
+RuntimePanel.Name = "RuntimePanel"
+RuntimePanel.AnchorPoint = Vector2.new(0, 0)
+RuntimePanel.Position = UDim2.fromOffset(14, 50)
+RuntimePanel.Size = UDim2.fromOffset(360, 122)
+RuntimePanel.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
+RuntimePanel.BackgroundTransparency = 0.14
+RuntimePanel.BorderSizePixel = 0
+RuntimePanel.Visible = State.DiagnosticsOverlay
+RuntimePanel.ZIndex = 101
+RuntimePanel.Parent = Overlay
+
+local RuntimePanelCorner = Instance.new("UICorner")
+RuntimePanelCorner.CornerRadius = UDim.new(0, 8)
+RuntimePanelCorner.Parent = RuntimePanel
+
+local RuntimePanelStroke = Instance.new("UIStroke")
+RuntimePanelStroke.Thickness = 1
+RuntimePanelStroke.Transparency = 0.35
+RuntimePanelStroke.Color = Color3.fromRGB(0, 120, 255)
+RuntimePanelStroke.Parent = RuntimePanel
+
+RuntimeStatusText = Instance.new("TextLabel")
+RuntimeStatusText.BackgroundTransparency = 1
+RuntimeStatusText.Position = UDim2.fromOffset(10, 8)
+RuntimeStatusText.Size = UDim2.new(1, -20, 0, 18)
+RuntimeStatusText.TextColor3 = Color3.new(1, 1, 1)
+RuntimeStatusText.Font = Enum.Font.GothamBold
+RuntimeStatusText.TextSize = 12
+RuntimeStatusText.TextXAlignment = Enum.TextXAlignment.Left
+RuntimeStatusText.Text = "OverSeek.wtf | boot"
+RuntimeStatusText.Parent = RuntimePanel
+
+RuntimeDiagnosticsText = Instance.new("TextLabel")
+RuntimeDiagnosticsText.BackgroundTransparency = 1
+RuntimeDiagnosticsText.Position = UDim2.fromOffset(10, 28)
+RuntimeDiagnosticsText.Size = UDim2.new(1, -20, 0, 18)
+RuntimeDiagnosticsText.TextColor3 = Color3.fromRGB(210, 210, 215)
+RuntimeDiagnosticsText.Font = Enum.Font.Gotham
+RuntimeDiagnosticsText.TextSize = 11
+RuntimeDiagnosticsText.TextXAlignment = Enum.TextXAlignment.Left
+RuntimeDiagnosticsText.Text = "Errors: 0 | Last: none"
+RuntimeDiagnosticsText.Parent = RuntimePanel
+
+RuntimeLogText = Instance.new("TextLabel")
+RuntimeLogText.BackgroundTransparency = 1
+RuntimeLogText.Position = UDim2.fromOffset(10, 49)
+RuntimeLogText.Size = UDim2.new(1, -20, 1, -56)
+RuntimeLogText.TextColor3 = Color3.fromRGB(180, 185, 195)
+RuntimeLogText.Font = Enum.Font.Code
+RuntimeLogText.TextSize = 10
+RuntimeLogText.TextXAlignment = Enum.TextXAlignment.Left
+RuntimeLogText.TextYAlignment = Enum.TextYAlignment.Top
+RuntimeLogText.TextWrapped = false
+RuntimeLogText.Text = "[boot] aguardando inicialização"
+RuntimeLogText.Parent = RuntimePanel
+
+local function setDiagnosticsVisible(value)
+    State.DiagnosticsOverlay = value == true
+    RuntimePanel.Visible = State.DiagnosticsOverlay
+end
 
 -- ================================================================
 -- BODY-PART BOUNDING BOX
@@ -791,7 +1440,7 @@ local function projectBodyBoundingBox(character)
     local width = maximumX - minimumX
     local height = maximumY - minimumY
 
-    if width <= 1 or height <= 1 then
+    if width < State.MinBoxPixels or height < State.MinBoxPixels then
         return nil
     end
 
@@ -852,8 +1501,8 @@ local function createCornerBox(parent)
     }
 
     local function apply(width, height, color)
-        local horizontal = math.max(8, width * cornerRatio)
-        local vertical = math.max(8, height * cornerRatio)
+        local horizontal = math.min(width, math.max(8, width * cornerRatio))
+        local vertical = math.min(height, math.max(8, height * cornerRatio))
 
         TL_H.Position = UDim2.fromOffset(0, 0)
         TL_H.Size = UDim2.fromOffset(horizontal, thickness)
@@ -988,7 +1637,7 @@ local function createESP(player)
     return data
 end
 
-local function updateSnapline(line, destination, color)
+local function updateSnapline(line, destination, color, thickness)
     local center = getScreenCenter()
     local delta = destination - center
     local length = delta.Magnitude
@@ -1005,7 +1654,7 @@ local function updateSnapline(line, destination, color)
 
     line.Size = UDim2.fromOffset(
         length,
-        1.5
+        clamp(thickness or 1.5, 1, 5)
     )
 
     line.Rotation = math.deg(
@@ -1043,16 +1692,15 @@ local function updateESPPlayer(player)
         return
     end
 
-    if not State.Teammates and isTeammate(player) then
+    if not shouldIncludeByTeam(player) then
         data.Root.Visible = false
         data.Snapline.Visible = false
         data.Highlight.Enabled = false
+        data.Info.Visible = false
         return
     end
 
-    local color =
-        (player.TeamColor and player.TeamColor.Color)
-        or Color3.fromRGB(0, 150, 255)
+    local color = getESPColor(player)
 
     local box = projectBodyBoundingBox(character)
 
@@ -1102,6 +1750,10 @@ local function updateESPPlayer(player)
             )
         end
 
+        if State.ShowRelationship then
+            table.insert(information, getRelationship(player))
+        end
+
         if State.ShowSleeping and isSleeping(character) then
             table.insert(information, "SLEEPING")
         end
@@ -1125,6 +1777,7 @@ local function updateESPPlayer(player)
         )
 
         data.Info.TextColor3 = color
+        data.Info.TextSize = clamp(State.InfoTextSize, 10, 18)
         data.Info.Position = UDim2.new(
             0.5,
             0,
@@ -1148,6 +1801,10 @@ local function updateESPPlayer(player)
     if State.Outline then
         data.Highlight.Adornee = character
         data.Highlight.OutlineColor = color
+        data.Highlight.DepthMode =
+            State.OutlineDepth == "Occluded"
+            and Enum.HighlightDepthMode.Occluded
+            or Enum.HighlightDepthMode.AlwaysOnTop
         data.Highlight.Enabled = true
     else
         data.Highlight.Enabled = false
@@ -1169,7 +1826,8 @@ local function updateESPPlayer(player)
                         point.X,
                         point.Y
                     ),
-                    color
+                    color,
+                    State.SnaplineThickness
                 )
             else
                 data.Snapline.Visible = false
@@ -1195,8 +1853,6 @@ end
 -- ================================================================
 -- SCIENTIST NPC ESP
 -- ================================================================
-
-local NPCESP = {}
 
 local function getNPCModels()
     local result = {}
@@ -1278,7 +1934,7 @@ local function removeNPCESP(model)
 end
 
 local function updateScientistESP()
-    if not State.ESPEnabled or not State.ShowScientists then
+    if not State.SystemEnabled or not State.ESPEnabled or not State.ShowScientists then
         for model in pairs(NPCESP) do
             removeNPCESP(model)
         end
@@ -1324,6 +1980,8 @@ local function updateScientistESP()
             end
 
             data.Info.Text = table.concat(parts, " | ")
+            data.Info.TextColor3 = State.NPCColor
+            data.Box.UIStroke.Color = State.NPCColor
         else
             data.Root.Visible = false
             data.Box.Visible = false
@@ -1352,7 +2010,7 @@ local function removeHitboxVisualizer(player)
 end
 
 local function updateHitboxVisualizers()
-    if not State.HitboxVisualizer then
+    if not State.SystemEnabled or not State.HitboxVisualizer then
         for player in pairs(HitboxVisuals) do
             removeHitboxVisualizer(player)
         end
@@ -1381,7 +2039,7 @@ local function updateHitboxVisualizers()
                     box.ZIndex = 5
                     box.Transparency = 0.65
                     box.Color3 = Color3.fromRGB(0, 150, 255)
-                    box.Parent = Overlay
+                    box.Parent = AdornmentFolder
                     HitboxVisuals[player] = box
                 end
 
@@ -1455,9 +2113,9 @@ QuickBarGui.Name = "OverSeek_QuickBar"
 QuickBarGui.ResetOnSpawn = false
 QuickBarGui.IgnoreGuiInset = true
 QuickBarGui.DisplayOrder = 1000000
-QuickBarGui.Parent = getGuiParent()
+QuickBarGui.Parent = GuiParent
 
-local QuickBar = Instance.new("Frame")
+QuickBar = Instance.new("Frame")
 QuickBar.Name = "QuickBar"
 QuickBar.AnchorPoint = Vector2.new(0.5, 1)
 QuickBar.Position = UDim2.new(0.5, 0, 1, -18)
@@ -1524,6 +2182,11 @@ local function createQuickButton(label, callback)
 end
 
 QuickButtons.AIM = createQuickButton("AIM", function()
+    if not State.SystemEnabled then
+        notify("OverSeek", "Initialize System primeiro.")
+        return
+    end
+
     if State.AimMode == "Off" then
         State.AimMode = "Aimbot"
 
@@ -1571,6 +2234,11 @@ QuickButtons.FOV = createQuickButton("FOV", function()
 end)
 
 QuickButtons.TGT = createQuickButton("TGT", function()
+    if not State.SystemEnabled then
+        notify("OverSeek", "Initialize System primeiro.")
+        return
+    end
+
     State.AimEnabled = not State.AimEnabled
 
     if UI.AimEnabled then
@@ -1588,10 +2256,243 @@ QuickButtons.UI = createQuickButton("UI", function()
 end)
 
 -- ================================================================
+-- VALIDATION / CONFIG / RECOVERY
+-- ================================================================
+
+local function sanitizeState()
+    State.FOVRadius = clamp(State.FOVRadius, 25, 500)
+    State.RenderDistance = clamp(State.RenderDistance, 50, 1500)
+    State.AimSmooth = clamp(State.AimSmooth, 1, 20)
+    State.HitboxX = clamp(State.HitboxX, 1, 10)
+    State.HitboxY = clamp(State.HitboxY, 1, 10)
+    State.HitboxZ = clamp(State.HitboxZ, 1, 10)
+    State.InfoTextSize = clamp(State.InfoTextSize, 10, 18)
+    State.SnaplineThickness = clamp(State.SnaplineThickness, 1, 5)
+    State.FOVLineThickness = clamp(State.FOVLineThickness, 1, 5)
+    State.MinBoxPixels = clamp(State.MinBoxPixels, 2, 20)
+    State.FallbackGroupId = math.max(0, math.floor(tonumber(State.FallbackGroupId) or 0))
+    State.ValidationInterval = clamp(State.ValidationInterval, 1, 10)
+    State.ESPUpdateRate = clamp(State.ESPUpdateRate, 10, 60)
+
+    if State.AimMode ~= "Off"
+        and State.AimMode ~= "Aimbot"
+        and State.AimMode ~= "Silent Aim (Trident)" then
+        State.AimMode = "Off"
+    end
+
+    if State.TeamFilter ~= "All"
+        and State.TeamFilter ~= "Enemies Only"
+        and State.TeamFilter ~= "Teammates Only" then
+        State.TeamFilter = "Enemies Only"
+    end
+
+    if State.TeamColorMode ~= "Auto"
+        and State.TeamColorMode ~= "Relationship"
+        and State.TeamColorMode ~= "Custom" then
+        State.TeamColorMode = "Auto"
+    end
+end
+
+local function updateLegacyTeammateState()
+    State.Teammates = State.TeamFilter == "All"
+end
+
+local function validateUIHandles()
+    local checks = {
+        { "Window", Window },
+        { "Combat Tab", Combat },
+        { "Visual Tab", Visual },
+        { "Misc Tab", Misc },
+        { "Settings Tab", Settings },
+        { "FOV", FOVCircle },
+        { "FOV line", FOVTargetLine },
+        { "Overlay", Overlay },
+        { "QuickBar", QuickBar },
+    }
+
+    local missing = {}
+
+    for _, item in ipairs(checks) do
+        if item[2] == nil then
+            table.insert(missing, item[1])
+        end
+    end
+
+    return #missing == 0, missing
+end
+
+local function validateRuntime()
+    sanitizeState()
+
+    local failures = {}
+    local camera = getCamera()
+
+    if not LocalPlayer then
+        table.insert(failures, "LocalPlayer")
+    end
+
+    if not getGuiParent() then
+        table.insert(failures, "PlayerGui/CoreGui")
+    end
+
+    if not camera then
+        table.insert(failures, "CurrentCamera")
+    end
+
+    if type(RunService.BindToRenderStep) ~= "function" then
+        table.insert(failures, "RunService.BindToRenderStep")
+    end
+
+    local uiOk, missingUI = validateUIHandles()
+    if not uiOk then
+        for _, item in ipairs(missingUI) do
+            table.insert(failures, item)
+        end
+    end
+
+    if State.RuntimeProfile == "Trident" and game.PlaceId ~= TRIDENT_PLACE_ID then
+        table.insert(failures, "Trident PlaceId mismatch")
+    end
+
+    if State.RuntimeProfile == "Auto" and game.PlaceId == TRIDENT_PLACE_ID then
+        -- Auto selects the Trident adapter only for this known PlaceId.
+        -- The universal visual/target layer remains available regardless.
+    elseif State.RuntimeProfile == "Auto" then
+        -- Universal profile is the fallback outside the known PlaceId.
+    end
+
+    if #failures > 0 then
+        State.SystemEnabled = false
+        Initialized = false
+        pushRuntimeLog("CHECK", "Falha de disponibilidade: " .. table.concat(failures, ", "))
+        return false, failures
+    end
+
+    pushRuntimeLog(
+        "CHECK",
+        string.format(
+            "Runtime OK | profile=%s | platform=%s | place=%s",
+            State.RuntimeProfile,
+            getPlatformName(),
+            tostring(game.PlaceId)
+        )
+    )
+
+    return true, {}
+end
+
+local function setSystemEnabled(value, reason)
+    if value then
+        local ok = validateRuntime()
+        if not ok then
+            State.SystemEnabled = false
+            Initialized = false
+            notify("OverSeek", "Inicialização bloqueada: ambiente indisponível.")
+            return false
+        end
+
+        State.SystemEnabled = true
+        Initialized = true
+        pushRuntimeLog("READY", reason or "Sistema inicializado.")
+        notify("OverSeek", "Sistema inicializado com validação concluída.")
+        updateResolverExport()
+        return true
+    end
+
+    State.SystemEnabled = false
+    Initialized = false
+    pushRuntimeLog("SAFE", reason or "Sistema colocado em standby.")
+    updateResolverExport()
+    return true
+end
+
+local function manualSaveConfiguration()
+    sanitizeState()
+
+    local ok, result = safeCall("Save configuration", function()
+        return Window:Save()
+    end)
+
+    if ok and result ~= false then
+        pushRuntimeLog("CONFIG", "Configuração salva manualmente.")
+        notify("Configuration", "Configuração salva manualmente.")
+        return true
+    end
+
+    notify("Configuration Error", "Falha ao salvar a configuração.")
+    return false
+end
+
+local function manualLoadConfiguration()
+    local ok, result = safeCall("Load configuration", function()
+        return Window:Load()
+    end)
+
+    if ok and result ~= false then
+        sanitizeState()
+        updateLegacyTeammateState()
+        pushRuntimeLog("CONFIG", "Configuração carregada manualmente.")
+        notify("Configuration", "Configuração carregada.")
+        return true
+    end
+
+    notify("Configuration Error", "Falha ao carregar a configuração.")
+    return false
+end
+
+local function resetFeatureStates()
+    State.AimMode = "Off"
+    State.AimEnabled = false
+    State.ESPEnabled = false
+    State.Snapline = false
+    State.FOVCircle = false
+    State.FOVTargetLine = false
+    State.FOVTargetDot = false
+    State.HitboxVisualizer = false
+
+    safeCall("Reset UI", function()
+        if UI.AimMode then UI.AimMode:Set("Off") end
+        if UI.AimEnabled then UI.AimEnabled:Set(false) end
+        if UI.ESPEnabled then UI.ESPEnabled:Set(false) end
+        if UI.Snapline then UI.Snapline:Set(false) end
+        if UI.FOVCircle then UI.FOVCircle:Set(false) end
+        if UI.FOVTargetLine then UI.FOVTargetLine:Set(false) end
+        if UI.FOVTargetDot then UI.FOVTargetDot:Set(false) end
+        if UI.HitboxVisualizer then UI.HitboxVisualizer:Set(false) end
+    end)
+
+    pushRuntimeLog("RESET", "Funções visuais colocadas em OFF.")
+end
+
+local function reinitializeSystem()
+    if RecoveryInProgress then
+        return false
+    end
+
+    RecoveryInProgress = true
+    pushRuntimeLog("INIT", "Reinicialização solicitada.")
+    clearRuntimeObjects()
+
+    local ok = validateRuntime()
+    if not ok then
+        RecoveryInProgress = false
+        return false
+    end
+
+    State.SystemEnabled = true
+    Initialized = true
+    RecoveryInProgress = false
+    pushRuntimeLog("READY", "Reinicialização concluída.")
+    updateResolverExport()
+    notify("OverSeek", "Reinicialização concluída sem reter objetos antigos.")
+    return true
+end
+
+-- ================================================================
 -- COMBAT TAB
 -- ================================================================
 
-local Combat = Window:CreateTab({
+Combat = Window:CreateTab({
     name = "Combat",
     icon = "crosshair",
 })
@@ -1611,33 +2512,46 @@ UI.AimMode = Combat:CreateDropdown({
     value = "Off",
     flag = "AimMode",
     callback = function(value)
-        State.AimMode = value
-
         if value == "Silent Aim (Trident)" then
             local supported, message = checkTridentAdapter()
 
             if not supported then
                 notify("Trident Adapter", message)
+                safeCall("Aim mode reset", function()
+                    UI.AimMode:Set("Off")
+                end)
                 State.AimMode = "Off"
-                UI.AimMode:Set("Off")
-            else
-                notify("Trident Adapter", message)
+                State.AimEnabled = false
+                return
             end
+
+            notify("Trident Adapter", message)
         end
+
+        State.AimMode = value
 
         if value == "Off" then
             State.AimEnabled = false
-            UI.AimEnabled:Set(false)
+            safeCall("Aim disable", function()
+                UI.AimEnabled:Set(false)
+            end)
         end
     end,
 })
 
 UI.AimEnabled = Combat:CreateToggle({
     name = "Aim Enabled",
-    description = "Liga o modo selecionado.",
+    description = "Liga o modo selecionado após o sistema estar inicializado.",
     value = false,
     flag = "AimEnabled",
     callback = function(value)
+        if value and not State.SystemEnabled then
+            safeCall("Aim gate", function()
+                UI.AimEnabled:Set(false)
+            end)
+            notify("OverSeek", "Clique em Initialize System antes de ativar a mira.")
+            return
+        end
         State.AimEnabled = value
     end,
 })
@@ -1716,6 +2630,38 @@ UI.FOVCircle = Combat:CreateToggle({
     end,
 })
 
+UI.FOVTargetLine = Combat:CreateToggle({
+    name = "FOV Target Line",
+    description = "Mostra uma linha do centro do FOV até o alvo mais próximo dentro do círculo, independente do Aim Enabled.",
+    value = true,
+    flag = "FOVTargetLine",
+    callback = function(value)
+        State.FOVTargetLine = value
+    end,
+})
+
+UI.FOVTargetDot = Combat:CreateToggle({
+    name = "FOV Target Dot",
+    description = "Marca o ponto projetado do alvo atual dentro do FOV.",
+    value = true,
+    flag = "FOVTargetDot",
+    callback = function(value)
+        State.FOVTargetDot = value
+    end,
+})
+
+UI.FOVLineThickness = Combat:CreateSlider({
+    name = "FOV Line Thickness",
+    description = "Espessura da linha de indicação interna.",
+    range = { 1, 5 },
+    increment = 0.5,
+    value = 1.5,
+    flag = "FOVLineThickness",
+    callback = function(value)
+        State.FOVLineThickness = value
+    end,
+})
+
 UI.TargetSleeping = Combat:CreateToggle({
     name = "Target Sleeping",
     description = "Permite personagens detectados como Sleeping/Downed.",
@@ -1726,13 +2672,59 @@ UI.TargetSleeping = Combat:CreateToggle({
     end,
 })
 
+UI.TeamFilter = Combat:CreateDropdown({
+    name = "Team Filter",
+    description = "Separado da mira: controla quem o ESP/FOV/target resolver pode considerar.",
+    options = {
+        "All",
+        "Enemies Only",
+        "Teammates Only",
+    },
+    value = "Enemies Only",
+    flag = "TeamFilter",
+    callback = function(value)
+        State.TeamFilter = value
+        updateLegacyTeammateState()
+    end,
+})
+
 UI.Teammates = Combat:CreateToggle({
-    name = "Teammates",
-    description = "Inclui jogadores do mesmo Team/TeamColor.",
+    name = "Include Teammates",
+    description = "Atalho legado: ON = All; OFF = Enemies Only.",
     value = false,
     flag = "Teammates",
     callback = function(value)
-        State.Teammates = value
+        State.TeamFilter = value and "All" or "Enemies Only"
+        if UI.TeamFilter then
+            UI.TeamFilter:Set(State.TeamFilter)
+        end
+        updateLegacyTeammateState()
+    end,
+})
+
+UI.TeamColorMode = Combat:CreateDropdown({
+    name = "Team Color Mode",
+    description = "Auto usa Team/TeamColor quando existe; Relationship mantém a paleta manual.",
+    options = {
+        "Auto",
+        "Relationship",
+        "Custom",
+    },
+    value = "Auto",
+    flag = "TeamColorMode",
+    callback = function(value)
+        State.TeamColorMode = value
+    end,
+})
+
+UI.FallbackGroupId = Combat:CreateInput({
+    name = "Fallback Group ID",
+    description = "Opcional. Sem equipes nativas, membros desse grupo são tratados como companheiros.",
+    placeholderText = "Ex.: 123456",
+    flag = "FallbackGroupId",
+    callback = function(value)
+        State.FallbackGroupId = math.max(0, math.floor(tonumber(value) or 0))
+        table.clear(RelationshipCache)
     end,
 })
 
@@ -1742,7 +2734,23 @@ Combat:CreateSection({
 
 UI.AdapterStatus = Combat:CreateText({
     name = "Adapter Status",
-    text = "Verificação ainda não executada.",
+    text = "Clique em Initialize System para validar o ambiente.",
+})
+
+Combat:CreateButton({
+    name = "Initialize System",
+    description = "Executa os gates de disponibilidade e então libera os loops visuais/target.",
+    callback = function()
+        setSystemEnabled(true, "Inicialização manual via Combat.")
+    end,
+})
+
+Combat:CreateButton({
+    name = "Standby System",
+    description = "Desliga os loops sem destruir a interface.",
+    callback = function()
+        setSystemEnabled(false, "Standby manual via Combat.")
+    end,
 })
 
 Combat:CreateButton({
@@ -1751,13 +2759,15 @@ Combat:CreateButton({
     callback = function()
         local supported, message = checkTridentAdapter()
 
-        UI.AdapterStatus:SetTitle(
-            supported
-                and "Adapter Status · READY"
-                or "Adapter Status · CHECK"
-        )
+        safeCall("Adapter UI", function()
+            UI.AdapterStatus:SetTitle(
+                supported
+                    and "Adapter Status · READY"
+                    or "Adapter Status · CHECK"
+            )
 
-        UI.AdapterStatus:Set(message)
+            UI.AdapterStatus:Set(message)
+        end)
 
         notify(
             supported and "Adapter Ready" or "Adapter Check",
@@ -1870,7 +2880,7 @@ UI.HitboxZ = Combat:CreateSlider({
 -- VISUAL TAB
 -- ================================================================
 
-local Visual = Window:CreateTab({
+Visual = Window:CreateTab({
     name = "Visual",
     icon = "eye",
 })
@@ -1996,13 +3006,217 @@ UI.Snapline = Visual:CreateToggle({
     end,
 })
 
+UI.ShowRelationship = Visual:CreateToggle({
+    name = "Show Relationship",
+    description = "Adiciona Teammate/Enemy ao rótulo sem alterar a seleção.",
+    value = false,
+    flag = "ShowRelationship",
+    callback = function(value)
+        State.ShowRelationship = value
+    end,
+})
+
+UI.OutlineDepth = Visual:CreateDropdown({
+    name = "Outline Depth",
+    description = "AlwaysOnTop renderiza através de paredes; Occluded respeita a oclusão do mundo.",
+    options = {
+        "AlwaysOnTop",
+        "Occluded",
+    },
+    value = "AlwaysOnTop",
+    flag = "OutlineDepth",
+    callback = function(value)
+        State.OutlineDepth = value
+    end,
+})
+
+UI.InfoTextSize = Visual:CreateSlider({
+    name = "Info Text Size",
+    description = "Escala do nome/distância sem alterar o tamanho da caixa.",
+    range = { 10, 18 },
+    increment = 1,
+    value = 13,
+    flag = "InfoTextSize",
+    callback = function(value)
+        State.InfoTextSize = value
+    end,
+})
+
+UI.SnaplineThickness = Visual:CreateSlider({
+    name = "Snapline Thickness",
+    description = "Espessura da linha externa por jogador.",
+    range = { 1, 5 },
+    increment = 0.5,
+    value = 1.5,
+    flag = "SnaplineThickness",
+    callback = function(value)
+        State.SnaplineThickness = value
+    end,
+})
+
+Visual:CreateSection({
+    name = "Colors",
+})
+
+local function createColorPickerSafe(tab, properties)
+    local element
+    local ok = safeCall("ColorPicker " .. tostring(properties.name), function()
+        element = tab:CreateColorPicker(properties)
+    end)
+    return ok and element or nil
+end
+
+UI.AllyColor = createColorPickerSafe(Visual, {
+    name = "Ally Color",
+    color = State.AllyColor,
+    flag = "AllyColor",
+    callback = function(value)
+        State.AllyColor = value
+    end,
+})
+
+UI.EnemyColor = createColorPickerSafe(Visual, {
+    name = "Enemy Color",
+    color = State.EnemyColor,
+    flag = "EnemyColor",
+    callback = function(value)
+        State.EnemyColor = value
+    end,
+})
+
+UI.NeutralColor = createColorPickerSafe(Visual, {
+    name = "Neutral Color",
+    color = State.NeutralColor,
+    flag = "NeutralColor",
+    callback = function(value)
+        State.NeutralColor = value
+    end,
+})
+
+UI.FOVColor = createColorPickerSafe(Visual, {
+    name = "FOV Color",
+    color = State.FOVColor,
+    flag = "FOVColor",
+    callback = function(value)
+        State.FOVColor = value
+        FOVStroke.Color = value
+    end,
+})
+
+Visual:CreateSection({
+    name = "Performance",
+})
+
+UI.ESPUpdateRate = Visual:CreateSlider({
+    name = "ESP Update Rate",
+    description = "Limita a frequência do loop visual para reduzir churn de UI.",
+    range = { 10, 60 },
+    increment = 5,
+    value = 30,
+    flag = "ESPUpdateRate",
+    callback = function(value)
+        State.ESPUpdateRate = value
+    end,
+})
+
 -- ================================================================
 -- MISC TAB
 -- ================================================================
 
-local Misc = Window:CreateTab({
+Misc = Window:CreateTab({
     name = "Misc",
     icon = "layers",
+})
+
+Misc:CreateSection({
+    name = "System",
+})
+
+UI.AutoValidation = Misc:CreateToggle({
+    name = "Auto Validation",
+    description = "Verifica câmera, UI, profile e disponibilidade em intervalos curtos.",
+    value = true,
+    flag = "AutoValidation",
+    callback = function(value)
+        State.AutoValidation = value
+    end,
+})
+
+UI.AutoRecovery = Misc:CreateToggle({
+    name = "Auto Recovery",
+    description = "Ao detectar falhas repetidas, coloca o sistema em standby em vez de manter o loop quebrado.",
+    value = true,
+    flag = "AutoRecovery",
+    callback = function(value)
+        State.AutoRecovery = value
+    end,
+})
+
+UI.ErrorGuard = Misc:CreateToggle({
+    name = "Error Guard",
+    description = "Captura exceções internas, registra o ponto de falha e impede que a callback derrube o loop principal.",
+    value = true,
+    flag = "ErrorGuard",
+    callback = function(value)
+        State.ErrorGuard = value
+    end,
+})
+
+UI.DiagnosticsOverlay = Misc:CreateToggle({
+    name = "Diagnostics Overlay",
+    description = "Mostra FPS, estado, contagem de erros e log curto fora do Rayfield.",
+    value = true,
+    flag = "DiagnosticsOverlay",
+    callback = function(value)
+        setDiagnosticsVisible(value)
+    end,
+})
+
+UI.RuntimeProfile = Misc:CreateDropdown({
+    name = "Runtime Profile",
+    description = "Auto seleciona o adapter pela disponibilidade do jogo; Universal não depende de recursos internos do jogo.",
+    options = {
+        "Auto",
+        "Universal",
+        "Trident",
+    },
+    value = "Auto",
+    flag = "RuntimeProfile",
+    callback = function(value)
+        State.RuntimeProfile = value
+    end,
+})
+
+Misc:CreateButton({
+    name = "Initialize / Recheck",
+    description = "Executa uma verificação completa e só libera os loops se o ambiente passar nos gates.",
+    callback = function()
+        reinitializeSystem()
+    end,
+})
+
+Misc:CreateButton({
+    name = "Clear Runtime",
+    description = "Executa unbind, disconnect, destroy e limpa objetos temporários sem destruir o Rayfield.",
+    callback = function()
+        State.SystemEnabled = false
+        Initialized = false
+        clearRuntimeObjects()
+        pushRuntimeLog("CLEAR", "Runtime limpo; interface preservada.")
+        notify("OverSeek", "Runtime limpo com sucesso.")
+    end,
+})
+
+Misc:CreateButton({
+    name = "Validate Now",
+    description = "Executa o diagnóstico sob demanda.",
+    callback = function()
+        local ok = validateRuntime()
+        notify(
+            ok and "Validation OK" or "Validation Check",
+            ok and "Ambiente disponível." or "Existem gates que impediram a ativação."
+        )
+    end,
 })
 
 Misc:CreateSection({
@@ -2070,23 +3284,34 @@ Misc:CreateButton({
     name = "Reset Visuals",
     description = "Desliga ESP, Snapline, FOV e hitbox visualizer.",
     callback = function()
-        State.ESPEnabled = false
-        State.Snapline = false
-        State.FOVCircle = false
-        State.HitboxVisualizer = false
-
-        UI.ESPEnabled:Set(false)
-        UI.Snapline:Set(false)
-        UI.FOVCircle:Set(false)
-        UI.HitboxVisualizer:Set(false)
+        resetFeatureStates()
     end,
 })
+
+Misc:CreateButton({
+    name = "Clear Error Log",
+    description = "Limpa o histórico de diagnóstico local da sessão atual.",
+    callback = function()
+        table.clear(RuntimeErrors)
+        table.clear(RuntimeLog)
+        RuntimeErrorCount = 0
+        LastRuntimeError = "none"
+        if RuntimeDiagnosticsText then
+            RuntimeDiagnosticsText.Text = "Errors: 0 | Last: none"
+        end
+        if RuntimeLogText then
+            RuntimeLogText.Text = "[log] limpo"
+        end
+        pushRuntimeLog("LOG", "Histórico de erro limpo.")
+    end,
+})
+
 
 -- ================================================================
 -- SETTINGS TAB
 -- ================================================================
 
-local Settings = Window:CreateTab({
+Settings = Window:CreateTab({
     name = "Settings",
     icon = "settings",
 })
@@ -2095,37 +3320,164 @@ Settings:CreateSection({
     name = "Configuration",
 })
 
+Settings:CreateText({
+    name = "Persistence Mode",
+    text = "Manual only · nada é salvo automaticamente.",
+})
+
 Settings:CreateButton({
     name = "Save Configuration",
-    description = "Salva a configuração atual do Rayfield.",
+    description = "Salva somente quando você clicar neste botão.",
     callback = function()
-        local ok = Window:Save()
-
-        notify(
-            ok and "Configuration" or "Configuration Error",
-            ok and "Configuração salva." or "Falha ao salvar."
-        )
+        manualSaveConfiguration()
     end,
 })
 
 Settings:CreateButton({
     name = "Load Configuration",
-    description = "Carrega a configuração salva.",
+    description = "Carrega a configuração salva e revalida os valores.",
     callback = function()
-        local ok = Window:Load()
+        manualLoadConfiguration()
+    end,
+})
 
-        notify(
-            ok and "Configuration" or "Configuration Error",
-            ok and "Configuração carregada." or "Falha ao carregar."
-        )
+Settings:CreateButton({
+    name = "Reset Defaults",
+    description = "Reinicia os estados de funções sem salvar automaticamente.",
+    callback = function()
+        resetFeatureStates()
+        pushRuntimeLog("CONFIG", "Estados funcionais resetados; nenhum arquivo foi salvo.")
     end,
 })
 
 Settings:CreateButton({
     name = "Hide UI",
-    description = "Esconde a janela sem desligar as funções.",
+    description = "Esconde a janela sem desligar as funções já inicializadas.",
     callback = function()
-        Window:Hide()
+        safeCall("Hide UI", function()
+            Window:Hide()
+        end)
+    end,
+})
+
+Settings:CreateSection({
+    name = "Runtime Status",
+})
+
+RuntimeStatusParagraph = Settings:CreateText({
+    name = "Runtime",
+    text = "STANDBY · valide e inicialize.",
+})
+UI.RuntimeStatusParagraph = RuntimeStatusParagraph
+
+Settings:CreateButton({
+    name = "Recheck Everything",
+    description = "Verifica todos os gates disponíveis sem ativar o sistema.",
+    callback = function()
+        validateRuntime()
+    end,
+})
+
+-- ================================================================
+-- DEVELOPER TAB / LOCAL KEY GATE
+-- ================================================================
+
+Developer = Window:CreateTab({
+    name = "Developer",
+    icon = "code",
+})
+
+local DEV_KEY = "nexosover" -- UI gate only; this is not cryptographic secrecy.
+
+Developer:CreateSection({
+    name = "Restricted",
+})
+
+UI.DevStatus = Developer:CreateText({
+    name = "Developer Status",
+    text = "LOCKED · chave necessária.",
+})
+
+UI.DevKeyInput = Developer:CreateInput({
+    name = "Developer Key",
+    description = "Chave local para liberar informações de diagnóstico do desenvolvedor; não é gravada na configuração.",
+    placeholderText = "Digite a chave",
+    callback = function(value)
+        State.DevUnlocked = tostring(value) == DEV_KEY
+
+        if State.DevUnlocked then
+            UI.DevStatus:Set("UNLOCKED · diagnóstico disponível.")
+            pushRuntimeLog("DEV", "Developer panel desbloqueado.")
+            updateResolverExport()
+        else
+            UI.DevStatus:Set("LOCKED · chave inválida.")
+            State.ExportResolver = false
+            updateResolverExport()
+        end
+    end,
+})
+
+UI.ExportResolver = Developer:CreateToggle({
+    name = "Export Resolver",
+    description = "Somente para desenvolvimento: expõe o resolver em RuntimeEnv. Desligado por padrão.",
+    value = false,
+    flag = "ExportResolver",
+    callback = function(value)
+        State.ExportResolver = State.DevUnlocked and value or false
+        updateResolverExport()
+    end,
+})
+
+Developer:CreateButton({
+    name = "Refresh Developer Info",
+    description = "Atualiza a caixa de informações do runtime atual.",
+    callback = function()
+        if not State.DevUnlocked then
+            notify("Developer", "Painel bloqueado.")
+            return
+        end
+
+        local jobId = tostring(game.JobId or "-")
+        local count = #Players:GetPlayers()
+        local maxPlayers = game:GetService("Players").MaxPlayers
+        local memoryText = "n/a"
+
+        safeCall("Memory stats", function()
+            local stats = game:GetService("Stats")
+            if stats and stats.GetTotalMemoryUsageMb then
+                memoryText = string.format("%.1f MB", stats:GetTotalMemoryUsageMb())
+            end
+        end)
+
+        UI.DevServerInfo:Set(string.format(
+            "PlaceId: %s\nJobId: %s\nPlayers: %d/%d\nPlatform: %s\nFPS: %d\nMemory: %s\nUptime: %ds",
+            tostring(game.PlaceId),
+            jobId,
+            count,
+            maxPlayers,
+            getPlatformName(),
+            CurrentFPS,
+            memoryText,
+            round(runtimeUptime())
+        ))
+    end,
+})
+
+UI.DevServerInfo = Developer:CreateText({
+    name = "Server Info",
+    text = "LOCKED",
+})
+
+Developer:CreateButton({
+    name = "Lock Developer Panel",
+    description = "Remove a autorização local e apaga a exportação do resolver.",
+    callback = function()
+        State.DevUnlocked = false
+        State.ExportResolver = false
+        updateResolverExport()
+        UI.DevStatus:Set("LOCKED · painel bloqueado.")
+        UI.DevServerInfo:Set("LOCKED")
+        pushRuntimeLog("DEV", "Developer panel bloqueado.")
     end,
 })
 
@@ -2138,7 +3490,9 @@ connect(
     function(player)
         removeESP(player)
         removeHitboxVisualizer(player)
-    end
+        RelationshipCache[player] = nil
+    end,
+    "PlayerRemoving"
 )
 
 connect(
@@ -2146,16 +3500,16 @@ connect(
     function()
         Camera = Workspace.CurrentCamera or Camera
         updateFOV()
-    end
+        updateFOVTargetIndicator()
+    end,
+    "CurrentCameraChanged"
 )
 
 -- ================================================================
--- RENDER LOOP
+-- RENDER LOOP / WATCHDOG
 -- ================================================================
 
-pcall(function()
-    RunService:UnbindFromRenderStep(SCRIPT_RENDER_NAME)
-end)
+unbindRenderLoop()
 
 RunService:BindToRenderStep(
     SCRIPT_RENDER_NAME,
@@ -2165,120 +3519,179 @@ RunService:BindToRenderStep(
             return
         end
 
-        Camera = Workspace.CurrentCamera or Camera
+        if State.ErrorGuard then
+            safeCall("Render Loop", function()
+                Camera = Workspace.CurrentCamera or Camera
 
-        -- FPS
-        FPSAccumulator += deltaTime
-        FPSFrames += 1
+                -- FPS
+                FPSAccumulator += deltaTime
+                FPSFrames += 1
 
-        if FPSAccumulator >= 0.5 then
-            CurrentFPS = round(
-                FPSFrames / FPSAccumulator
-            )
+                if FPSAccumulator >= 0.5 then
+                    CurrentFPS = round(FPSFrames / math.max(FPSAccumulator, 0.001))
+                    FPSAccumulator = 0
+                    FPSFrames = 0
 
-            FPSAccumulator = 0
-            FPSFrames = 0
+                    StatusText.Text = string.format(
+                        "  OverSeek.wtf | %d FPS",
+                        CurrentFPS
+                    )
 
-            StatusText.Text = string.format(
-                "  OverSeek.wtf | %d FPS",
-                CurrentFPS
-            )
-        end
+                    if RuntimeStatusText then
+                        RuntimeStatusText.Text = string.format(
+                            "OverSeek.wtf | %d FPS | %s | ERR %d",
+                            CurrentFPS,
+                            State.SystemEnabled and "READY" or "STANDBY",
+                            RuntimeErrorCount
+                        )
+                    end
 
-        -- Core visuals
-        updateFOV()
-        updateAimbot(deltaTime)
+                    if RuntimeStatusParagraph then
+                        RuntimeStatusParagraph:Set(
+                            string.format(
+                                "%s | FPS %d | Errors %d | %s",
+                                State.SystemEnabled and "READY" or "STANDBY",
+                                CurrentFPS,
+                                RuntimeErrorCount,
+                                Initialized and "initialized" or "standby"
+                            )
+                        )
+                    end
+                end
 
-        -- ESP update at ~30 FPS to reduce UI churn.
-        ESPAccumulator += deltaTime
+                -- FOV is purely visual and is not gated by AimEnabled.
+                updateFOV()
 
-        if ESPAccumulator >= (1 / 30) then
-            ESPAccumulator = 0
+                if State.SystemEnabled then
+                    updateFOVTargetIndicator()
+                    updateAimbot(deltaTime)
 
-            updateESP()
+                    ESPAccumulator += deltaTime
+                    local espInterval = 1 / math.max(State.ESPUpdateRate, 10)
 
-            NPCAccumulator += 1 / 30
+                    if ESPAccumulator >= espInterval then
+                        ESPAccumulator = 0
+                        updateESP()
 
-            if NPCAccumulator >= 0.10 then
-                NPCAccumulator = 0
-                updateScientistESP()
-            end
+                        NPCAccumulator += espInterval
+                        if NPCAccumulator >= 0.10 then
+                            NPCAccumulator = 0
+                            updateScientistESP()
+                        end
 
-            updateHitboxVisualizers()
-        end
+                        updateHitboxVisualizers()
+                    end
 
-        -- Target state
-        if State.AimEnabled and State.AimMode ~= "Off" then
-            local target = getClosestTarget()
+                    if State.AimEnabled and State.AimMode ~= "Off" then
+                        local target = getClosestTarget()
 
-            if target then
-                TargetStatus.Text = string.format(
-                    "%s: %s | %dm | FOV %d",
-                    State.AimMode == "Aimbot"
-                        and "AIM"
-                        or "TARGET",
-                    target.player.Name,
-                    round(target.worldDistance),
-                    round(target.screenDistance)
-                )
+                        if target then
+                            TargetStatus.Text = string.format(
+                                "%s: %s | %dm | FOV %d",
+                                State.AimMode == "Aimbot" and "AIM" or "TARGET",
+                                target.player.Name,
+                                round(target.worldDistance),
+                                round(target.screenDistance)
+                            )
+                            TargetStatus.Visible = true
+                        else
+                            TargetStatus.Text = "TARGET: NONE"
+                            TargetStatus.Visible = true
+                        end
+                    else
+                        TargetStatus.Text = ""
+                        TargetStatus.Visible = false
+                    end
+                else
+                    TargetStatus.Text = ""
+                    TargetStatus.Visible = false
+                    FOVTargetLine.Visible = false
+                    FOVTargetDot.Visible = false
+                end
 
-                TargetStatus.Visible = true
-            else
-                TargetStatus.Text = "TARGET: NONE"
-                TargetStatus.Visible = true
-            end
+                if RuntimeDiagnosticsText then
+                    RuntimeDiagnosticsText.Text = string.format(
+                        "Errors: %d | Last: %s",
+                        RuntimeErrorCount,
+                        LastRuntimeError
+                    )
+                end
+
+                if RuntimeStatusText then
+                    RuntimeStatusText.Text = string.format(
+                        "OverSeek.wtf | %d FPS | %s | ERR %d",
+                        CurrentFPS,
+                        State.SystemEnabled and "READY" or "STANDBY",
+                        RuntimeErrorCount
+                    )
+                end
+            end)
         else
-            TargetStatus.Text = ""
-            TargetStatus.Visible = false
+            -- Even with ErrorGuard disabled, keep a tiny heartbeat alive without
+            -- allowing a visual update exception to unwind the RenderStep callback.
+            safeCall("Render Fallback", function()
+                Camera = Workspace.CurrentCamera or Camera
+                updateFOV()
+            end)
         end
 
-        -- Quick buttons
-        setQuickState(
-            QuickButtons.AIM,
-            State.AimEnabled
-            and State.AimMode == "Aimbot"
-        )
+        -- Watchdog / automatic validation.
+        ValidationAccumulator += deltaTime
 
-        setQuickState(
-            QuickButtons.ESP,
-            State.ESPEnabled
-        )
+        if State.AutoValidation and ValidationAccumulator >= State.ValidationInterval then
+            ValidationAccumulator = 0
 
-        setQuickState(
-            QuickButtons.FOV,
-            State.FOVCircle
-        )
+            safeCall("Watchdog", function()
+                local ok = validateRuntime()
 
-        setQuickState(
-            QuickButtons.TGT,
-            State.AimEnabled
-        )
+                if not ok and State.SystemEnabled and State.AutoRecovery then
+                    setSystemEnabled(false, "Watchdog desativou após falha de disponibilidade.")
+                end
+            end)
+        end
     end
 )
 
 -- ================================================================
--- INITIAL STATE
+-- INITIAL STATE / BOOT DIAGNOSTIC
 -- ================================================================
 
 updateFOV()
+setDiagnosticsVisible(State.DiagnosticsOverlay)
+sanitizeState()
 
 local supported, adapterMessage = checkTridentAdapter()
 
-UI.AdapterStatus:SetTitle(
-    supported
-        and "Adapter Status · READY"
-        or "Adapter Status · CHECK"
+safeCall("Adapter startup UI", function()
+    UI.AdapterStatus:SetTitle(
+        supported
+            and "Adapter Status · READY"
+            or "Adapter Status · CHECK"
+    )
+    UI.AdapterStatus:Set(adapterMessage)
+end)
+
+pushRuntimeLog(
+    "BOOT",
+    string.format(
+        "Interface criada | PlaceId=%s | Adapter=%s",
+        tostring(game.PlaceId),
+        supported and "ready" or "check"
+    )
 )
 
-UI.AdapterStatus:Set(adapterMessage)
+startRelationshipWorker()
 
 notify(
     "OverSeek.wtf",
-    "Interface carregada sem nested groups; ESP/FOV foram reorganizados."
+    "Interface carregada. Clique em Initialize System para liberar os loops. Nenhuma configuração é salva automaticamente."
 )
 
+-- Runtime export remains protected until the developer gate is unlocked.
+updateResolverExport()
+
 -- ================================================================
--- CLEANUP
+-- CLEANUP (IDEMPOTENT)
 -- ================================================================
 
 local function cleanup()
@@ -2287,39 +3700,30 @@ local function cleanup()
     end
 
     Running = false
+    State.SystemEnabled = false
+    Initialized = false
+    table.clear(RelationshipCache)
 
     pcall(function()
-        RunService:UnbindFromRenderStep(
-            SCRIPT_RENDER_NAME
-        )
+        if RelationshipWorker and task.cancel then
+            task.cancel(RelationshipWorker)
+            RelationshipWorker = nil
+        end
     end)
 
-    disconnectAll()
+    pushRuntimeLog("CLEANUP", "Iniciando limpeza do runtime.")
+    clearRuntimeObjects()
 
-    for player in pairs(ESP) do
-        removeESP(player)
-    end
-
-    for player in pairs(HitboxVisuals) do
-        removeHitboxVisualizer(player)
-    end
-
-    for model in pairs(NPCESP) do
-        removeNPCESP(model)
-    end
+    destroyInstance(Overlay)
+    destroyInstance(QuickBarGui)
+    destroyInstance(AdornmentFolder)
 
     pcall(function()
-        Overlay:Destroy()
+        RuntimeEnv.OverSeek_GetTarget = nil
     end)
 
-    pcall(function()
-        QuickBarGui:Destroy()
-    end)
-
-    ExportEnvironment.OverSeek_Cleanup = nil
+    RuntimeEnv.OverSeek_Cleanup = nil
 end
 
-ExportEnvironment.OverSeek_Cleanup = cleanup
+RuntimeEnv.OverSeek_Cleanup = cleanup
 
--- Combat is intentionally the first tab, so no Navigate() call is necessary.
--- This avoids invoking extra tab bring-into-view logic during startup.
