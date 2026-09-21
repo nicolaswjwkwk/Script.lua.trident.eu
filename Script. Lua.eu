@@ -1,2083 +1,2325 @@
-SWG_DiscordUser = "swim"
-    SWG_DiscordID = 1337
-    SWG_Private = true
-    SWG_Dev = false
-    SWG_Version = "free"
-    SWG_Title = 'free swimhub.xyz %s - %s | discord.gg/priv9'
-    SWG_ShortName = 'free'
-    SWG_FullName = 'ts'
-    SWG_FFA = false
---- FABRICATED VALUES END!!!
+--[[
+    ================================================================
+    OVERSEEK.WTF - RAYFIELD GEN2 / STABLE PRO LAYOUT
+    ================================================================
 
-local clone = cloneref or function(v) return v end
-local workspace = clone(game:GetService("Workspace"))
-local Players = clone(game:GetService("Players"))
-local RunService = clone(game:GetService("RunService"))
-local Lighting = clone(game:GetService("Lighting"))
-local UserInputService = clone(game:GetService("UserInputService"))
-local HttpService = clone(game:GetService("HttpService"))
-local GuiInset = clone(game:GetService("GuiService")):GetGuiInset()
+    Correções desta versão:
+      1. Remove CreateParagraph (não existe no Gen2 atual).
+      2. Remove nested CreateGroup do layout principal para evitar o erro
+         "AbsoluteWindowSize is not a valid member of Frame" observado no runtime.
+      3. ESP 2D usa os BODY PARTS do personagem, em vez de offsets fixos.
+         Isso deixa a caixa proporcional ao corpo e reduz corretamente com a distância.
+      4. O nome/distância ficam presos no topo da caixa, não na cabeça.
+      5. FOV é um círculo de UI real, reposicionado no centro da viewport a cada frame.
+      6. Aim Point "Head Top" mira na parte superior da cabeça.
+      7. Aimbot usa câmera local e o resolver usa a mesma lógica de alvo/FOV.
+      8. Trident Adapter fica separado como verificação de compatibilidade; não executa
+         hooks de projétil de terceiros.
+      9. Save/Load usa a API nativa do Rayfield Gen2.
+     10. Quick Bar + atalhos ficam separados da lógica para facilitar manutenção.
+
+    Compatibilidade:
+      - UI: Rayfield Gen2 estável.
+      - ESP/FOV/target resolver: estruturas padrão do Roblox.
+      - Mecânicas internas de armas não são presumidas como universais.
+    ================================================================
+]]
+
+-- ================================================================
+-- SERVICES
+-- ================================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
-local Camera = workspace.CurrentCamera
+local Camera = Workspace.CurrentCamera
 
--- Rayfield Gen2 UI (direto, sem adapter)
+local TRIDENT_PLACE_ID = 13253735473
+local SCRIPT_RENDER_NAME = "OverSeek_Aimbot_Render"
+local SCRIPT_CONNECTION_PREFIX = "OverSeek_"
+
+-- ================================================================
+-- RAYFIELD GEN2
+-- ================================================================
+
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local Window = Rayfield:CreateWindow({
-    name = "SwimHub",
-    subtitle = "PC / Mobile",
+    name = "OverSeek.wtf",
+    subtitle = "Professional Visual Suite",
+    showName = "OverSeek.wtf",
+    showIconOnly = false,
     sidebarLayout = true,
+    ToggleUIKeybind = Enum.KeyCode.RightShift,
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "Config",
-        customFolder = "SwimHub",
+        fileName = "OverSeek_Pro",
     },
 })
 
--- Tabs principais
-local CombatTab = Window:CreateTab({name = "Combat"})
-local VisualsTab = Window:CreateTab({name = "Visuals"})
-local MiscTab = Window:CreateTab({name = "Misc"})
-local ConfigTab = Window:CreateTab({name = "Config"})
+-- ================================================================
+-- STATE
+-- ================================================================
 
--- ===== COMBAT =====
-local AimbotSection = CombatTab:CreateSection({name = "Aimbot"})
-local HitboxSection = CombatTab:CreateSection({name = "Hitbox"})
+local State = {
+    -- Aim
+    AimMode = "Off", -- Off / Aimbot / Silent Aim (Trident)
+    AimEnabled = false,
+    AimSmooth = 8,
+    AimPoint = "Head Top", -- Head Top / Head Center / Body Center
+    HitPart = "Head",
+    FOVRadius = 175,
+    FOVCircle = true,
+    TargetSleeping = false,
+    Teammates = false,
 
--- ===== VISUALS =====
-local PlayerESPSection = VisualsTab:CreateSection({name = "Player ESP"})
-local ObjectESPSection = VisualsTab:CreateSection({name = "Object ESP"})
-local CheatVisualsSection = VisualsTab:CreateSection({name = "Cheat Visuals"})
-local WorldVisualsSection = VisualsTab:CreateSection({name = "World Visuals"})
-local CrosshairSection = VisualsTab:CreateSection({name = "Crosshair"})
+    -- ESP
+    ESPEnabled = false,
+    Box = true,
+    CornerBoxes = true,
+    Outline = false,
+    ShowName = true,
+    ShowDistance = true,
+    ShowSleeping = false,
+    ShowScientists = false,
+    ShowGun = false,
+    RenderDistance = 1000,
+    Snapline = false,
 
--- ===== MISC =====
-local MovementSection = MiscTab:CreateSection({name = "Movement"})
-local ExploitsSection = MiscTab:CreateSection({name = "Exploits"})
-local ATVFlySection = MiscTab:CreateSection({name = "ATV Fly"})
-local MiscSection = MiscTab:CreateSection({name = "Misc"})
-local ChatSection = MiscTab:CreateSection({name = "Chat"})
+    -- Hitbox visualizer
+    HitboxVisualizer = false,
+    HitboxPart = "Head",
+    HitboxX = 5,
+    HitboxY = 5,
+    HitboxZ = 5,
 
--- ===== CONFIG =====
-local ThemeSection = ConfigTab:CreateSection({name = "Interface"})
-
--- Contador de elementos (diagnأ³stico)
-local UI_CREATED = { count = 0 }
-local function uiBump()
-    UI_CREATED.count = UI_CREATED.count + 1
-end
-
--- Diagnأ³stico: smoke test nativo
-local UI_DIAG = { smoke = false, smokeErr = "nأ£o executado", tabType = "?" }
-do
-    local okSmk, resSmk = pcall(function()
-        return CombatTab:CreateToggle({
-            name = "Interface OK ًں’œ",
-            value = true,
-            flag = "__swimhub_smoke",
-            callback = function() end,
-        })
-    end)
-    if okSmk and resSmk ~= nil then
-        UI_DIAG.smoke = true
-        UI_DIAG.smokeErr = "criado"
-        uiBump()
-    else
-        UI_DIAG.smokeErr = tostring(resSmk)
-    end
-    UI_DIAG.tabType = type(CombatTab)
-end
-
--- ============================================================
--- cheat table (compatibility layer for original feature code)
--- ============================================================
-local cheat = {
-    Library = nil,
-    Toggles = nil,
-    Options = nil,
-    ThemeManager = nil,
-    SaveManager = nil,
-    connections = {
-        heartbeats = {},
-        renderstepped = {}
-    },
-    drawings = {},
-    hooks = {}
+    -- UI
+    Notifications = true,
+    QuickBar = true,
 }
 
-cheat.utility = {} do
-    cheat.utility.new_heartbeat = function(func)
-        local obj = {}
-        cheat.connections.heartbeats[func] = func
-        function obj:Disconnect()
-            if func then
-                cheat.connections.heartbeats[func] = nil
-                func = nil
-            end
-        end
-        return obj
-    end
-    cheat.utility.new_renderstepped = function(func)
-        local obj = {}
-        cheat.connections.renderstepped[func] = func
-        function obj:Disconnect()
-            if func then
-                cheat.connections.renderstepped[func] = nil
-                func = nil
-            end
-        end
-        return obj
-    end
-    cheat.utility.new_drawing = function(drawobj, args)
-        local obj = Drawing.new(drawobj)
-        for i, v in pairs(args) do
-            obj[i] = v
-        end
-        cheat.drawings[obj] = obj
-        return obj
-    end
-    cheat.utility.new_hook = function(f, newf, usecclosure)
-        if usecclosure then
-            local old; old = hookfunction(f, newcclosure(function(...)
-                return newf(old, ...)
-            end))
-            cheat.hooks[f] = old
-            return old
-        else
-            local old; old = hookfunction(f, function(...)
-                return newf(old, ...)
-            end)
-            cheat.hooks[f] = old
-            return old
-        end
-    end
-    local connection = RunService.Heartbeat:Connect(LPH_NO_VIRTUALIZE(function(delta)
-        for _, func in pairs(cheat.connections.heartbeats) do
-            func(delta)
-        end
-    end))
-    local connection1 = RunService.RenderStepped:Connect(LPH_NO_VIRTUALIZE(function(delta)
-        for _, func in pairs(cheat.connections.renderstepped) do
-            func(delta)
-        end
-    end))
-    cheat.utility.unload = function()
-        connection:Disconnect()
-        connection1:Disconnect()
-        for key, _ in pairs(cheat.connections.heartbeats) do
-            cheat.connections.heartbeats[key] = nil
-        end
-        for key, _ in pairs(cheat.connections.renderstepped) do
-            cheat.connections.renderstepped[key] = nil
-        end
-        for _, drawing in pairs(cheat.drawings) do
-            drawing:Remove()
-            cheat.drawings[_] = nil
-        end
-        for hooked, original in pairs(cheat.hooks) do
-            if type(original) == "function" then
-                hookfunction(hooked, clonefunction(original))
-            else
-                hookmetamethod(original["instance"], original["metamethod"], clonefunction(original["func"]))
-            end
-        end
-    end
+local UI = {}
+local Connections = {}
+local ESP = {}
+local HitboxVisuals = {}
+
+local Running = true
+local FPSAccumulator = 0
+local FPSFrames = 0
+local CurrentFPS = 0
+local ESPAccumulator = 0
+local NPCAccumulator = 0
+
+-- ================================================================
+-- UTILITY
+-- ================================================================
+
+local function connect(signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(Connections, c)
+    return c
 end
 
--- Rayfield replaces the old custom UI library; provide minimal shims so
--- the rest of the script (cheat.Library, cheat.ThemeManager, cheat.SaveManager)
--- can be used without the old library_main / library_theme / library_save.
-cheat.Library = window
-cheat.Toggles = {}
-cheat.Options = {}
-cheat.ThemeManager = (function()
-    local m = {}
-    function m:SetLibrary(lib) end
-    function m:SetFolder(folder) end
-    function m:SetOptionsTEMP(opts, toggles) end
-    function m:ApplyToGroupbox(groupbox) end
-    return m
-end)()
-cheat.SaveManager = (function()
-    local m = {}
-    function m:SetLibrary(lib) end
-    function m:SetFolder(folder) end
-    function m:SetOptionsTEMP(opts, toggles) end
-    function m:IgnoreThemeSettings() end
-    function m:BuildConfigSection(tab) end
-    return m
-end)()
-
-local _CFramenew = CFrame.new
-local _Vector2new = Vector2.new
-local _Vector3new = Vector3.new
-local _IsDescendantOf = game.IsDescendantOf
-local _FindFirstChild = game.FindFirstChild
-local _FindFirstChildOfClass = game.FindFirstChildOfClass
-local _Raycast = workspace.Raycast
-local _IsKeyDown = UserInputService.IsKeyDown
-local _WorldToViewportPoint = Camera.WorldToViewportPoint
-local _Vector3zeromin = Vector3.zero.Min
-local _Vector2zeromin = Vector2.zero.Min
-local _Vector3zeromax = Vector3.zero.Max
-local _Vector2zeromax = Vector2.zero.Max
-local _IsA = game.IsA
-local tablecreate = table.create
-local mathfloor = math.floor
-local mathround = math.round
-local mathclamp = math.clamp
-local tostring = tostring
-local unpack = unpack
-local getupvalues = debug.getupvalues
-local getupvalue = debug.getupvalue
-local setupvalue = debug.setupvalue
-local getconstants = debug.getconstants
-local getconstant = debug.getconstant
-local setconstant = debug.setconstant
-local getstack = debug.getstack
-local setstack = debug.setstack
-local getinfo = debug.getinfo
-local rawget = rawget
-
-LPH_NO_VIRTUALIZE = LPH_NO_VIRTUALIZE or function(f) return f end
-LPH_JIT_MAX = LPH_JIT_MAX or function(f) return f end
-
-local trident = {
-    loaded = false,
-    lastpos = nil,
-    middlepart = nil,
-    tcp = nil,
-    original_model = nil
-}
---[[
--- no recoil
-debug.setconstant(debug.getupvalue(trident.recoil, 10), 2, rawget(rawget(trident.classes, "InputManager"), "InputDevice"))
--- jump shoot
-
--- no spread / silent
-local old; old = hookmetamethod(Random.new(), "__namecall", newcclosure(function(self, ...)
-    local args = {...}
-    if args[1] == -100 and args[2] == 100 then
-        print('nospread')
-        return old(self, -1, 1)
-    end
-    return old(self, ...)
-end))
-]]
--- Espera o character com TIMEOUT (15s): antes travava aqui para sempre em mapa
--- sem workspace.Const (sأ³ janela + smoke apareciam, o resto nunca era criado).
-do
-    local tries = 0
-    while not (trident.middlepart and trident.original_model and trident.tcp) and tries < 30 do
+local function disconnectAll()
+    for _, connection in ipairs(Connections) do
         pcall(function()
-            trident.middlepart = workspace.Const.Ignore.LocalCharacter.Middle
-            trident.original_model = game:GetService("ReplicatedStorage").Shared.entities.Player.Model
-            trident.tcp = LocalPlayer.TCP
+            connection:Disconnect()
         end)
-        if not (trident.middlepart and trident.original_model and trident.tcp) then
-            tries = tries + 1
-            task.wait(0.5)
-        end
     end
-    trident.loaded = trident.middlepart ~= nil and trident.original_model ~= nil and trident.tcp ~= nil
-    if not trident.loaded then
-        warn("[SwimHub] trident nأ£o encontrado (15s) â€” UI liberada sem character")
-    end
+
+    table.clear(Connections)
 end
 
-cheat.EspLibrary = {}; LPH_NO_VIRTUALIZE(function()
-    local esp_table = {}
-    local workspace = clone(game:GetService("Workspace"))
-    local rservice = clone(game:GetService("RunService"))
-    local plrs = clone(game:GetService("Players"))
-    local lplr = plrs.LocalPlayer
-    local container = Instance.new("Folder", game:GetService("CoreGui").RobloxGui)
-    esp_table = {
-        __loaded = false,
-        main_settings = {
-            textSize = 15,
-            textFont = Drawing.Fonts.Monospace,
-            distancelimit = false,
-            maxdistance = 200,
-            useteamcolor = false,
-            teamcheck = false,
-            sleepcheck = false,
-            simplecalc = false
-        },
-        main_object_settings = {
-            textSize = 15,
-            textFont = Drawing.Fonts.Monospace,
-            distancelimit = false,
-            maxdistance = 200,
-            useteamcolor = false,
-            teamcheck = false,
-            sleepcheck = false,
-            allowed = {}
-        },
-        settings = {
-            enemy = {
-                enabled = false,
-    
-                box = false,
-                box_fill = false,
-                realname = false,
-                dist = false,
-                weapon = false,
-                skeleton = false,
-    
-                box_outline = false,
-                realname_outline = false,
-                dist_outline = false,
-                weapon_outline = false,
-    
-                box_color = { Color3.new(1, 1, 1), 1 },
-                box_fill_color = { Color3.new(1, 0, 0), 0.3 },
-                realname_color = { Color3.new(1, 1, 1), 1 },
-                dist_color = { Color3.new(1, 1, 1), 1 },
-                weapon_color = { Color3.new(1, 1, 1), 1 },
-                skeleton_color = { Color3.new(1, 1, 1), 1 },
-    
-                box_outline_color = { Color3.new(), 1 },
-                realname_outline_color = Color3.new(),
-                dist_outline_color = Color3.new(),
-                weapon_outline_color = Color3.new(),
-    
-                chams = false,
-                chams_visible_only = false,
-                chams_fill_color = { Color3.new(1, 1, 1), 0.5 },
-                chamsoutline_color = { Color3.new(1, 1, 1), 0 }
-            },
-            object = {
-                enabled = false,
-
-                realname = false,
-                realname_outline = false,
-
-                realname_color = { Color3.new(1, 1, 1), 1 },
-                realname_outline_color = Color3.new(),
-
-                chams = false,
-                chams_visible_only = false,
-                chams_fill_color = { Color3.new(1, 1, 1), 0.5 },
-                chamsoutline_color = { Color3.new(1, 1, 1), 0 }
-            }
-        }
-    }
-    local loaded_plrs = {}
-    -- (please update me) vars
-    local camera = workspace.CurrentCamera
-
-    -- constants
-    local VERTICES = {
-        _Vector3new(-1, -1, -1),
-        _Vector3new(-1, 1, -1),
-        _Vector3new(-1, 1, 1),
-        _Vector3new(-1, -1, 1),
-        _Vector3new(1, -1, -1),
-        _Vector3new(1, 1, -1),
-        _Vector3new(1, 1, 1),
-        _Vector3new(1, -1, 1)
-    }
-    local skeleton_order = {
-        ["LeftFoot"] = "LeftLowerLeg",
-        ["LeftLowerLeg"] = "LeftUpperLeg",
-        ["LeftUpperLeg"] = "LowerTorso",
-    
-        ["RightFoot"] = "RightLowerLeg",
-        ["RightLowerLeg"] = "RightUpperLeg",
-        ["RightUpperLeg"] = "LowerTorso",
-    
-        ["LeftHand"] = "LeftLowerArm",
-        ["LeftLowerArm"] = "LeftUpperArm",
-        ["LeftUpperArm"] = "Torso",
-    
-        ["RightHand"] = "RightLowerArm",
-        ["RightLowerArm"] = "RightUpperArm",
-        ["RightUpperArm"] = "Torso",
-    
-        ["LowerTorso"] = "Torso",
-        ["Torso"] = "Head"
-    }
-    -- functions
-    local esp = {}
-    esp.create_obj = function(type, args)
-        local obj = Drawing.new(type)
-        for i, v in pairs(args) do
-            obj[i] = v
-        end
-        return obj
-    end
-    local function isBodyPart(name)
-        return name == "Head" or name:find("Torso") or name:find("Leg") or name:find("Arm")
-    end
-    local function getBoundingBox(parts)
-        local min, max
-        for i = 1, #parts do
-            local part = parts[i]
-            local cframe, size = part.CFrame, part.Size
-    
-            min = _Vector3zeromin(min or cframe.Position, (cframe - size * 0.5).Position)
-            max = _Vector3zeromax(max or cframe.Position, (cframe + size * 0.5).Position)
-        end
-    
-        local center = (min + max) * 0.5
-        local front = _Vector3new(center.X, center.Y, max.Z)
-        return _CFramenew(center, front), max - min
-    end
-    local function worldToScreen(world)
-        local screen, inBounds = _WorldToViewportPoint(camera, world)
-        return _Vector2new(screen.X, screen.Y), inBounds, screen.Z
-    end
-    
-    local function calculateCorners(cframe, size)
-        local corners = tablecreate(#VERTICES)
-        for i = 1, #VERTICES do
-            corners[i] = worldToScreen((cframe + size * 0.5 * VERTICES[i]).Position)
-        end
-    
-        local min = _Vector2zeromin(camera.ViewportSize, unpack(corners))
-        local max = _Vector2zeromax(Vector2.zero, unpack(corners))
-        return {
-            corners = corners,
-            topLeft = _Vector2new(mathfloor(min.X), mathfloor(min.Y)),
-            topRight = _Vector2new(mathfloor(max.X), mathfloor(min.Y)),
-            bottomLeft = _Vector2new(mathfloor(min.X), mathfloor(max.Y)),
-            bottomRight = _Vector2new(mathfloor(max.X), mathfloor(max.Y))
-        }
+local function notify(title, content)
+    if not State.Notifications then
+        return
     end
 
-    local function calculateCornersSimple(head, hrp)
-        --[[
-            auto head_position = roblox::WorldToScreen(vector3_sub(head.GetPartPosition(), { 0, -0.5, 0 }), dimensions, viewmatrix);
-			auto leg_position = roblox::WorldToScreen(vector3_sub(rootpart.GetPartPosition(), { 0, 3.5, 0 }), dimensions, viewmatrix);
-            float height = leg_position.y - head_position.y;
-			float width = height / 3.6f;
-            corners = {
-			    {
-			        static_cast<int>(round(head_position.x - width)),
-			        static_cast<int>(round(head_position.y))
-			    }, // up left corner
-				{
-			        static_cast<int>(round(head_position.x - width)),
-			        static_cast<int>(round(leg_position.y))
-			    }, // down left corner
-				{
-			        static_cast<int>(round(head_position.x + width)),
-			        static_cast<int>(round(head_position.y))
-			    }, // up right corner
-			    {
-			        static_cast<int>(round(head_position.x + width)),
-			        static_cast<int>(round(leg_position.y))
-			    } // down right corner
-			};
-        ]]
-        local head_position = worldToScreen(head.Position - Vector3.yAxis * 0.5)
-        local leg_position = worldToScreen(hrp.Position - Vector3.yAxis * 3.5)
-        local headx, heady = head_position.X, head_position.Y
-        local legx, legy = leg_position.X, leg_position.Y
-        local height = legy - heady;
-        local width = height / 3.6
-        return {
-            topLeft = _Vector2new(headx - width, heady),
-            topRight = _Vector2new(headx - width, legy),
-            bottomLeft = _Vector2new(headx + width, heady),
-            bottomRight =_Vector2new(headx + width, legy)
-        }
-    end
-
-    local enttiyidentification = {}
     pcall(function()
-        for i, v in game:GetService("ReplicatedStorage").Shared.entities:GetChildren() do
-            local model = _FindFirstChild(v, "Model")
-            if model and model.PrimaryPart then
-                enttiyidentification[v.Name] = {
-                    CollisionGroup = model.PrimaryPart.CollisionGroup,
-                    Material = model.PrimaryPart.Material,
-                    Color = model.PrimaryPart.Color
-                }
-            end
-        end
+        Window:Notify({
+            title = title,
+            content = content,
+        })
     end)
-    local function identify_model(model)
-        if model.ClassName ~= "Model" then return false, false end
-        if _FindFirstChildOfClass(model, "MeshPart") and _FindFirstChildOfClass(model, "MeshPart").MeshId == "rbxassetid://12939036056" then
-            if #model:GetChildren() == 1 then
-                return "Stone", model:GetChildren()[1]
-            else
-                for _, part in model:GetChildren() do
-                    if part.Color == Color3.fromRGB(248, 248, 248) then
-                        return "Nitrate", part
-                    elseif part.Color == Color3.fromRGB(199, 172, 120) then
-                        return "Iron", part
-                    end
-                end
-            end
-        end
-        if not model.PrimaryPart then return end
-        local primpart = model.PrimaryPart
-        for name, entity in pairs(enttiyidentification) do
-            if entity.Color == primpart.Color and entity.Material == primpart.Material and entity.CollisionGroup == primpart.CollisionGroup then
-                return name, primpart
-            end
-        end
-        return false, false
+end
+
+local function clamp(number, minimum, maximum)
+    return math.max(minimum, math.min(maximum, number))
+end
+
+local function round(number)
+    return math.floor(number + 0.5)
+end
+
+local function getCamera()
+    Camera = Workspace.CurrentCamera or Camera
+    return Camera
+end
+
+local function getGuiParent()
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+
+    if playerGui then
+        return playerGui
     end
 
-    local function deepcopy(original)	
-        local copy = {}
-        for key, value in original do
-            copy[key] = type(value) == "table" and deepcopy(value) or value
-        end
-        return copy
+    local parent
+
+    pcall(function()
+        parent = CoreGui
+    end)
+
+    return parent or LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- ================================================================
+-- CHARACTER HELPERS
+-- ================================================================
+
+local function getCharacter(player)
+    if not player then
+        return nil
     end
 
-    -- MAINN
-    local function create_esp(model)
-        if model and _FindFirstChild(model, "Head") and _FindFirstChild(model, "LowerTorso") then
-            local settings = esp_table.settings.enemy
-            loaded_plrs[model] = {
-                obj = {
-                    box_fill = esp.create_obj("Square", { Filled = true, Visible = false }),
-                    box_outline = esp.create_obj("Square", { Filled = false, Thickness = 3, Visible = false, ZIndex = -1}),
-                    box = esp.create_obj("Square", { Filled = false, Thickness = 1, Visible = false }),
-                    realname = esp.create_obj("Text", { Center = true, Visible = false }),
-                    dist = esp.create_obj("Text", { Center = true, Visible = false }),
-                    weapon = esp.create_obj("Text", { Center = true, Visible = false }),
-                },
-                esp = {
-                    current_gun = "",
-                    corners = nil,
-                    head = nil,
-                    character = nil
-                },
-                chams_object = Instance.new("Highlight", container),
-            }
-            for required, _ in next, skeleton_order do
-                loaded_plrs[model].obj["skeleton_" .. required] = esp.create_obj("Line", { Visible = false })
-            end
+    local character = player.Character
 
-            local character = model
-            local head = _FindFirstChild(character, "Head")
-            local lowertorso = _FindFirstChild(character, "LowerTorso")
+    if character and character.Parent then
+        return character
+    end
 
+    return Workspace:FindFirstChild(player.Name)
+end
 
-            local plr = loaded_plrs[model]
-            local obj = plr.obj
+local function getHumanoid(character)
+    if not character then
+        return nil
+    end
 
-            local cham = plr.chams_object
-            local box = obj.box
-            local box_outline = obj.box_outline
-            local box_fill = obj.box_fill
-            local realname = obj.realname
-            local dist = obj.dist
-            local weapon = obj.weapon
+    return character:FindFirstChildOfClass("Humanoid")
+end
 
-            local main_settings = deepcopy(esp_table.main_settings)
-            local settings = deepcopy(esp_table.settings.enemy)
+local function getPart(character, name)
+    if not character then
+        return nil
+    end
 
-            local setvis_cache = false
+    local object = character:FindFirstChild(name)
 
-            function plr:forceupdate()
-                main_settings = deepcopy(esp_table.main_settings)
-                settings = deepcopy(esp_table.settings.enemy)
+    if object and object:IsA("BasePart") then
+        return object
+    end
 
-                cham.DepthMode = settings.chams_visible_only and Enum.HighlightDepthMode.Occluded or not settings.chams_visible_only and Enum.HighlightDepthMode.AlwaysOnTop 
-                cham.FillColor = settings.chams_fill_color[1]
-                cham.FillTransparency = settings.chams_fill_color[2]
-                cham.OutlineColor = settings.chamsoutline_color[1]
-                cham.OutlineTransparency = settings.chamsoutline_color[2]
+    return nil
+end
 
-                box.Transparency = settings.box_color[2]
-                box.Color = settings.box_color[1]
-                box_outline.Transparency = settings.box_outline_color[2]
-                box_outline.Color = settings.box_outline_color[1]
-                box_fill.Color = settings.box_fill_color[1]
-                box_fill.Transparency = settings.box_fill_color[2]
+local function getRoot(character)
+    return getPart(character, "HumanoidRootPart")
+        or getPart(character, "UpperTorso")
+        or getPart(character, "Torso")
+end
 
-                realname.Size = main_settings.textSize
-                realname.Font = main_settings.textFont
-                realname.Color = settings.realname_color[1]
-                realname.Outline = settings.realname_outline
-                realname.OutlineColor = settings.realname_outline_color
-                realname.Transparency = settings.realname_color[2]
+local function getHead(character)
+    return getPart(character, "Head")
+end
 
-                dist.Size = main_settings.textSize
-                dist.Font = main_settings.textFont
-                dist.Color = settings.dist_color[1]
-                dist.Outline = settings.dist_outline
-                dist.OutlineColor = settings.dist_outline_color
-                dist.Transparency = settings.dist_color[2]
+local function isAlive(character)
+    local humanoid = getHumanoid(character)
 
-                weapon.Size = main_settings.textSize
-                weapon.Font = main_settings.textFont
-                weapon.Color = settings.weapon_color[1]
-                weapon.Outline = settings.weapon_outline
-                weapon.OutlineColor = settings.weapon_outline_color
-                weapon.Transparency = settings.weapon_color[2]
+    if not humanoid then
+        return false
+    end
 
-                cham.Enabled = setvis_cache
-                box.Visible = setvis_cache
-                box_outline.Visible = setvis_cache
-                box_fill.Visible = setvis_cache
-                realname.Visible = setvis_cache
-                dist.Visible = setvis_cache
-                weapon.Visible = setvis_cache
+    return humanoid.Health > 0
+end
 
-                for required, _ in next, skeleton_order do
-                    local skeletonobj = obj["skeleton_" .. required]
-                    if (skeletonobj) then
-                        skeletonobj.Color = settings.skeleton_color[1]
-                        skeletonobj.Transparency = settings.skeleton_color[2]
-                        skeletonobj.Visible = setvis_cache
-                    end
-                end
-            end
+local function isSleeping(character)
+    if not character then
+        return false
+    end
 
-            function plr:togglevis(bool)
-                if setvis_cache ~= bool then
-                    setvis_cache = bool
-                    if not bool then
-                        for _, v in obj do v.Visible = false end
-                    else
-                        cham.Enabled = settings.chams
-                        box.Visible = settings.box
-                        box_outline.Visible = settings.box_outline
-                        box_fill.Visible = settings.box_fill
-                        realname.Visible = settings.realname
-                        dist.Visible = settings.dist
-                        weapon.Visible = settings.weapon
-                        for required, _ in next, skeleton_order do
-                            local skeletonobj = obj["skeleton_" .. required]
-                            if (skeletonobj) then
-                                skeletonobj.Visible = settings.skeleton
-                            end
+    for _, attributeName in ipairs({
+        "Sleeping",
+        "IsSleeping",
+        "Downed",
+    }) do
+        if character:GetAttribute(attributeName) == true then
+            return true
+        end
+    end
+
+    local humanoid = getHumanoid(character)
+
+    if humanoid then
+        local state = humanoid:GetState()
+
+        if state == Enum.HumanoidStateType.PlatformStanding then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function isScientist(character)
+    if not character then
+        return false
+    end
+
+    local lowerName = string.lower(character.Name)
+
+    if string.find(lowerName, "scientist", 1, true) then
+        return true
+    end
+
+    return character:GetAttribute("Scientist") == true
+        or character:GetAttribute("IsScientist") == true
+end
+
+local function getDistance(character)
+    local localCharacter = getCharacter(LocalPlayer)
+    local localRoot = getRoot(localCharacter)
+    local targetRoot = getRoot(character)
+
+    if not localRoot or not targetRoot then
+        return math.huge
+    end
+
+    return (localRoot.Position - targetRoot.Position).Magnitude
+end
+
+local function isTeammate(player)
+    if not player or not LocalPlayer then
+        return false
+    end
+
+    if player.Team ~= nil and LocalPlayer.Team ~= nil then
+        return player.Team == LocalPlayer.Team
+    end
+
+    if player.TeamColor ~= nil and LocalPlayer.TeamColor ~= nil then
+        return player.TeamColor == LocalPlayer.TeamColor
+    end
+
+    return false
+end
+
+local function withinRenderDistance(character)
+    return getDistance(character) <= State.RenderDistance
+end
+
+local function getTargetPart(character)
+    local requested = getPart(character, State.HitPart)
+
+    if requested then
+        return requested
+    end
+
+    return getRoot(character) or getHead(character)
+end
+
+-- ================================================================
+-- AIM POINT - precisa ficar na cabeça
+-- ================================================================
+
+local function getAimPoint(character)
+    if not character then
+        return nil
+    end
+
+    local head = getHead(character)
+
+    if State.AimPoint == "Head Top" then
+        if head then
+            -- CFrame.UpVector mantém o ponto no topo mesmo se a cabeça estiver inclinada.
+            return head.Position + head.CFrame.UpVector * (head.Size.Y * 0.42)
+        end
+    elseif State.AimPoint == "Head Center" then
+        if head then
+            return head.Position
+        end
+    elseif State.AimPoint == "Body Center" then
+        local root = getRoot(character)
+
+        if root then
+            return root.Position
+        end
+    end
+
+    local targetPart = getTargetPart(character)
+
+    return targetPart and targetPart.Position or nil
+end
+
+-- ================================================================
+-- TARGET RESOLVER
+-- ================================================================
+
+local function getScreenCenter()
+    local camera = getCamera()
+
+    if not camera then
+        return Vector2.zero
+    end
+
+    local viewport = camera.ViewportSize
+
+    return Vector2.new(
+        viewport.X * 0.5,
+        viewport.Y * 0.5
+    )
+end
+
+local function validTarget(player, character)
+    if not player or player == LocalPlayer then
+        return false
+    end
+
+    if not character or not character.Parent then
+        return false
+    end
+
+    if not isAlive(character) then
+        return false
+    end
+
+    if not withinRenderDistance(character) then
+        return false
+    end
+
+    if not State.Teammates and isTeammate(player) then
+        return false
+    end
+
+    if isSleeping(character) and not State.TargetSleeping then
+        return false
+    end
+
+    return true
+end
+
+local function getClosestTarget()
+    if not State.AimEnabled then
+        return nil
+    end
+
+    if State.AimMode == "Off" then
+        return nil
+    end
+
+    local camera = getCamera()
+
+    if not camera then
+        return nil
+    end
+
+    local center = getScreenCenter()
+    local best = nil
+    local bestDistance = State.FOVRadius
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local character = getCharacter(player)
+
+            if validTarget(player, character) then
+                local aimPosition = getAimPoint(character)
+
+                if aimPosition then
+                    local screenPoint, visible =
+                        camera:WorldToViewportPoint(aimPosition)
+
+                    if visible and screenPoint.Z > 0 then
+                        local point = Vector2.new(
+                            screenPoint.X,
+                            screenPoint.Y
+                        )
+
+                        local screenDistance =
+                            (point - center).Magnitude
+
+                        if screenDistance <= bestDistance then
+                            bestDistance = screenDistance
+
+                            best = {
+                                player = player,
+                                character = character,
+                                position = aimPosition,
+                                screenDistance = screenDistance,
+                                worldDistance = getDistance(character),
+                            }
                         end
                     end
                 end
             end
+        end
+    end
 
-            plr.connection = cheat.utility.new_renderstepped(function(delta)
-                if not (
-                    settings.enabled and
-                    head and
-                    character
-                ) then
-                    return plr:togglevis(false)
-                end
-                local _, onScreen = worldToScreen(head.Position)
-                if not onScreen then
-                    return plr:togglevis(false)
-                end
+    return best
+end
 
-                local distance = (camera.CFrame.p - head.Position).Magnitude
+-- Exports target resolver so an experience you control can consume the same target logic.
+local ExportEnvironment = _G
 
-                local corners
-                if main_settings.simplecalc then
-                    corners = calculateCornersSimple(head, lowertorso)
-                else
-                    local cache = {}
-                    local children = character:GetChildren()
-                    for i = 1, #children do
-                        local part = children[i]
-                        if _IsA(part, "BasePart") and isBodyPart(part.Name) then
-                            cache[#cache + 1] = part
-                        end
-                    end
-                    corners = calculateCorners(getBoundingBox(cache))
-                end
+pcall(function()
+    if typeof(getgenv) == "function" then
+        local env = getgenv()
 
-                if not corners then
-                    return plr:togglevis(false)
-                end
+        if type(env) == "table" then
+            ExportEnvironment = env
+        end
+    end
+end)
 
-                plr:togglevis(true)
+ExportEnvironment.OverSeek_GetTarget = getClosestTarget
 
-                cham.Adornee = character
-                do
-                    local pos = corners.topLeft
-                    local size = corners.bottomRight - corners.topLeft
-                    box.Position = pos
-                    box.Size = size
-                    box_outline.Position = pos + Vector2.one
-                    box_outline.Size = size - Vector2.one
-                    box_fill.Position = pos
-                    box_fill.Size = size
-                end
+-- ================================================================
+-- TRIDENT ADAPTER CHECK
+-- ================================================================
 
-                do
-                    realname.Text = "Player"
-                    realname.Position = (corners.topLeft + corners.topRight) * 0.5 -
-                        Vector2.yAxis * realname.TextBounds.Y - _Vector2new(0, 2)
-                end
+local function checkTridentAdapter()
+    if game.PlaceId ~= TRIDENT_PLACE_ID then
+        return false, "Outro jogo detectado. O adapter de Trident não é usado aqui."
+    end
 
-                do
-                    local bottom = (corners.bottomLeft + corners.bottomRight) * 0.5
-                    dist.Text = tostring(mathround(distance)) .. " studs"
-                    dist.Position = bottom
-                    weapon.Text = "unknown"
-                    weapon.Position = bottom + (dist.Visible and Vector2.yAxis * dist.TextBounds.Y - _Vector2new(0, 2) or Vector2.zero)
-                end
+    -- Only report whether the environment exposes the optional primitives.
+    -- No projectile hook is installed by this universal layer.
+    local available = {}
 
-                if settings.skeleton then
-                    for _, part in next, character:GetChildren() do
-                        local skeletonobj = obj["skeleton_" .. part.Name]
-                        local parent_part = skeleton_order[part.Name] and _FindFirstChild(character, skeleton_order[part.Name])
-                        if skeletonobj and parent_part then
-                            local part_position, _ = _WorldToViewportPoint(camera, part.Position)
-                            local parent_part_position, _ = _WorldToViewportPoint(
-                                camera, parent_part.CFrame.p
-                            )
-                            skeletonobj.From = _Vector2new(part_position.X, part_position.Y)
-                            skeletonobj.To = _Vector2new(parent_part_position.X, parent_part_position.Y)
-                        end
-                    end
+    for _, name in ipairs({
+        "getactors",
+        "run_on_actor",
+        "hookfunction",
+    }) do
+        local exists = false
+
+        pcall(function()
+            exists = type(_G[name]) == "function"
+        end)
+
+        if not exists then
+            pcall(function()
+                if typeof(getgenv) == "function" then
+                    local env = getgenv()
+                    exists = type(env[name]) == "function"
                 end
             end)
-
-            plr:forceupdate()
-        else
-            local espname, mainpart = identify_model(model)
-            if not (espname and mainpart) then return end
-            loaded_plrs[model] = {
-                obj = {
-                    name = esp.create_obj("Text", { Center = true, Visible = false, Text = espname }),
-                }
-            }
-            local plr = loaded_plrs[model]
-            local obj = plr.obj
-
-            local realname = obj.name
-
-            local main_settings = deepcopy(esp_table.main_object_settings)
-            local settings = deepcopy(esp_table.settings.object)
-            local allowedobjs = deepcopy(main_settings.allowed)
-
-            local setvis_cache = false
-
-            function plr:forceupdate()
-                main_settings = deepcopy(esp_table.main_object_settings)
-                settings = deepcopy(esp_table.settings.object)
-                allowedobjs = deepcopy(main_settings.allowed)
-                realname.Size = main_settings.textSize
-                realname.Font = main_settings.textFont
-                realname.Color = settings.realname_color[1]
-                realname.Outline = settings.realname_outline
-                realname.OutlineColor = settings.realname_outline_color
-                realname.Transparency = settings.realname_color[2]
-            end
-
-            function plr:togglevis(bool)
-                if setvis_cache ~= bool then
-                    for _, v in obj do v.Visible = bool end
-                    setvis_cache = bool
-                end
-            end
-
-            plr.connection = cheat.utility.new_heartbeat(function(delta)
-                local plr = loaded_plrs[model]
-                if not (settings.enabled and mainpart and allowedobjs[espname]) then
-                    return plr:togglevis(false)
-                end
-                local position, onscreen = worldToScreen(mainpart.Position)
-                if not onscreen then
-                    return plr:togglevis(false)
-                end
-                plr:togglevis(true)
-                realname.Position = position
-            end)
-
-            plr:forceupdate()
         end
+
+        table.insert(available, {
+            name = name,
+            ok = exists,
+        })
     end
-    local function destroy_esp(model)
-        local plr_object = loaded_plrs[model]
-        if not plr_object then return end
-        plr_object.connection:Disconnect()
-        for i, v in plr_object.obj do
-            v:Remove()
-        end
-        if plr_object.chams_object then
-            plr_object.chams_object:Destroy()
-        end
-        loaded_plrs[model] = nil
-    end
-    
-    function esp_table.load()
-        assert(not esp_table.__loaded, "[ESP] already loaded");
-    
-        for i, v in next, workspace:GetChildren() do
-           create_esp(v)
-        end
-    
-        esp_table.playerAdded = workspace.ChildAdded:Connect(create_esp);
-        esp_table.playerRemoving = workspace.ChildRemoved:Connect(destroy_esp);
-        esp_table.__loaded = true;
-    end
-    
-    function esp_table.unload()
-        assert(esp_table.__loaded, "[ESP] not loaded yet");
-    
-        for i, v in next, workspace:GetChildren() do
-            destroy_esp(v)
-        end
-    
-        esp_table.playerAdded:Disconnect();
-        esp_table.playerRemoving:Disconnect();
-        esp_table.__loaded = false;
-    end
-    
-    function esp_table.icaca()
-        for _, v in loaded_plrs do
-            task.spawn(function() v:forceupdate() end)
+
+    local missing = {}
+
+    for _, item in ipairs(available) do
+        if not item.ok then
+            table.insert(missing, item.name)
         end
     end
 
-    cheat.EspLibrary = esp_table
-end)();
+    if #missing > 0 then
+        return false,
+            "Trident detectado, mas o ambiente não expõe: " .. table.concat(missing, ", ")
+    end
 
-local aimbot = {
-    enabled = false,
-    camera = false,
-    silent = false, -- camera, silent
-    sleep_check = false,
-    team_check = false,
-    part = "Head",
-    manipulation = false,
-    manipulation_range = 5,
-    fov = false,
-    fov_show = false,
-    fov_color = Color3.new(1, 1, 1),
-    fov_outline = false,
-    fov_outline_color = Color3.new(0, 0, 0),
-    fov_size = 100,
-    indicator = false,
-    indicator_text = "",
-    jumpshoot = false,
-    noslowdown = false,
-    nospread = false,
-    forcehead = false,
-    invis = false,
-    mathhuge = false,
-    hitboxes = false,
-    hbbypass = false,
-    instant = false,
-    fly = false,
-    silentwalk = false
+    return true,
+        "Trident detectado e primitivas opcionais estão disponíveis."
+end
+
+-- ================================================================
+-- OVERLAY
+-- ================================================================
+
+local Overlay = Instance.new("ScreenGui")
+Overlay.Name = "OverSeek_Overlay"
+Overlay.ResetOnSpawn = false
+Overlay.IgnoreGuiInset = true
+Overlay.DisplayOrder = 999999
+Overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+Overlay.Parent = getGuiParent()
+
+-- ================================================================
+-- FOV CIRCLE
+-- ================================================================
+
+local FOVCircle = Instance.new("Frame")
+FOVCircle.Name = "FOVCircle"
+FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVCircle.BackgroundTransparency = 1
+FOVCircle.BorderSizePixel = 0
+FOVCircle.ZIndex = 100
+FOVCircle.Visible = false
+FOVCircle.Parent = Overlay
+
+local FOVCorner = Instance.new("UICorner")
+FOVCorner.CornerRadius = UDim.new(1, 0)
+FOVCorner.Parent = FOVCircle
+
+local FOVStroke = Instance.new("UIStroke")
+FOVStroke.Thickness = 1.5
+FOVStroke.Transparency = 0
+FOVStroke.Color = Color3.fromRGB(0, 150, 255)
+FOVStroke.Parent = FOVCircle
+
+local function updateFOV()
+    local camera = getCamera()
+
+    if not camera then
+        FOVCircle.Visible = false
+        return
+    end
+
+    local viewport = camera.ViewportSize
+
+    FOVCircle.Position = UDim2.fromOffset(
+        viewport.X * 0.5,
+        viewport.Y * 0.5
+    )
+
+    local diameter = clamp(State.FOVRadius * 2, 2, 1200)
+
+    FOVCircle.Size = UDim2.fromOffset(
+        diameter,
+        diameter
+    )
+
+    FOVCircle.Visible =
+        State.FOVCircle
+        and State.FOVRadius > 0
+end
+
+-- ================================================================
+-- TARGET STATUS / FPS
+-- ================================================================
+
+local TargetStatus = Instance.new("TextLabel")
+TargetStatus.Name = "TargetStatus"
+TargetStatus.AnchorPoint = Vector2.new(0.5, 0)
+TargetStatus.Position = UDim2.new(0.5, 0, 0.5, 14)
+TargetStatus.Size = UDim2.fromOffset(430, 22)
+TargetStatus.BackgroundTransparency = 1
+TargetStatus.TextColor3 = Color3.new(1, 1, 1)
+TargetStatus.TextStrokeTransparency = 0.25
+TargetStatus.Font = Enum.Font.GothamMedium
+TargetStatus.TextSize = 13
+TargetStatus.TextXAlignment = Enum.TextXAlignment.Center
+TargetStatus.Text = ""
+TargetStatus.Visible = false
+TargetStatus.ZIndex = 101
+TargetStatus.Parent = Overlay
+
+local StatusBar = Instance.new("Frame")
+StatusBar.Name = "StatusBar"
+StatusBar.Position = UDim2.fromOffset(14, 14)
+StatusBar.Size = UDim2.fromOffset(245, 30)
+StatusBar.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
+StatusBar.BackgroundTransparency = 0.08
+StatusBar.BorderSizePixel = 0
+StatusBar.ZIndex = 101
+StatusBar.Parent = Overlay
+
+local StatusCorner = Instance.new("UICorner")
+StatusCorner.CornerRadius = UDim.new(0, 8)
+StatusCorner.Parent = StatusBar
+
+local StatusStroke = Instance.new("UIStroke")
+StatusStroke.Thickness = 1
+StatusStroke.Transparency = 0.35
+StatusStroke.Color = Color3.fromRGB(0, 120, 255)
+StatusStroke.Parent = StatusBar
+
+local StatusText = Instance.new("TextLabel")
+StatusText.BackgroundTransparency = 1
+StatusText.Size = UDim2.fromScale(1, 1)
+StatusText.TextColor3 = Color3.new(1, 1, 1)
+StatusText.Font = Enum.Font.GothamMedium
+StatusText.TextSize = 12
+StatusText.Text = "  OverSeek.wtf | -- FPS"
+StatusText.TextXAlignment = Enum.TextXAlignment.Left
+StatusText.Parent = StatusBar
+
+-- ================================================================
+-- BODY-PART BOUNDING BOX
+-- ================================================================
+
+local BODY_PART_NAMES = {
+    "Head",
+    "UpperTorso",
+    "LowerTorso",
+    "Torso",
+    "HumanoidRootPart",
+    "LeftUpperArm",
+    "LeftLowerArm",
+    "LeftHand",
+    "RightUpperArm",
+    "RightLowerArm",
+    "RightHand",
+    "LeftUpperLeg",
+    "LeftLowerLeg",
+    "LeftFoot",
+    "RightUpperLeg",
+    "RightLowerLeg",
+    "RightFoot",
+    "Left Arm",
+    "Right Arm",
+    "Left Leg",
+    "Right Leg",
 }
 
-do
-    local validcharacters = {}
-    local _omHead = trident.original_model and trident.original_model:FindFirstChild("Head")
-    local hbc, original_size, hbsize = nil, _omHead and _omHead.Size or _Vector3new(2, 1, 1), _Vector3new(0.5, 1, 0.5)
-    local dynamic, alwayshead = false, false
-    local hitboxheadsizex, hitboxheadsizey, hitboxheadtransparency, cancollide = 10, 10, 0.5, false
-    local function addtovc(obj)
-        if not obj then return end
-        if not obj:FindFirstChild("Head") and not obj:FindFirstChild("LowerTorso") then return end
-        validcharacters[obj] = obj
-    end
+local function projectPartBounds(camera, part, minX, minY, maxX, maxY)
+    local half = part.Size * 0.5
 
-    local function removefromvc(obj)
-        if not validcharacters[obj] then return end
-        validcharacters[obj] = nil
-    end
-
-    for i, v in next, workspace:GetChildren() do addtovc(v) end
-    workspace.ChildAdded:Connect(addtovc);
-    workspace.ChildRemoved:Connect(removefromvc);
-
-    local hbb = HitboxSection
-    hbb:CreateToggle({
-        Name = 'hitbox expander',
-        CurrentValue = false,
-        Flag = 'hitbox_enabled',
-        Callback = function(value)
-            aimbot.hitboxes = value
-            if hbc then hbc:Disconnect() end
-            if value then
-                hbc = cheat.utility.new_heartbeat(function()
-                    local trans = hitboxheadtransparency
-                    for i, v in validcharacters do
-                        local primpart = v and _FindFirstChild(v, 'Head')
-                        if primpart then
-                            primpart.Size = hbsize
-                            primpart.Transparency = trans
-                            primpart.CanCollide = cancollide
-                        end
-                    end
-                end)
-            else
-                if hbc then hbc:Disconnect() end
-                for i, v in validcharacters do
-                    local primpart = v and _FindFirstChild(v, 'Head')
-                    if primpart then
-                        primpart.Size = original_size
-                        primpart.Transparency = 0
-                        primpart.CanCollide = true
-                    end
-                end
-            end
-        end
-    })
-    hbb:CreateSlider({
-        Name = 'transparency',
-        Range = {0, 1},
-        Increment = 0.1,
-        CurrentValue = 0.5,
-        Flag = 'hitbox_head_transparency',
-        Callback = function(State)
-            hitboxheadtransparency = State
-        end
-    })
-    hbb:CreateSlider({
-        Name = 'size x',
-        Range = {1, 15},
-        Increment = 0.1,
-        CurrentValue = 10,
-        Flag = 'hitbox_head_size_x',
-        Callback = function(State)
-            hitboxheadsizex = State
-            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
-        end
-    })
-    hbb:CreateSlider({
-        Name = 'size y',
-        Range = {1, 15},
-        Increment = 0.1,
-        CurrentValue = 10,
-        Flag = 'hitbox_head_size_y',
-        Callback = function(State)
-            hitboxheadsizey = State
-            hbsize = _Vector3new(hitboxheadsizex, hitboxheadsizey, hitboxheadsizex)
-        end
-    })
-end
-do
-    local espb = PlayerESPSection
-    local es = cheat.EspLibrary.settings.enemy
-    espb:CreateSlider({
-        Name = 'esp font size',
-        Range = {1, 30},
-        Increment = 1,
-        CurrentValue = 13,
-        Flag = 'espfontsize',
-        Callback = function(State)
-            cheat.EspLibrary.main_settings.textSize = State
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'simpler corner calc (fps)',
-        CurrentValue = false,
-        Flag = 'espsimplecalc',
-        Callback = function(first)
-            cheat.EspLibrary.main_settings.simplecalc = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'enable esp',
-        CurrentValue = false,
-        Flag = 'espswitch',
-        Callback = function(first)
-            es.enabled = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'team/ai check',
-        CurrentValue = false,
-        Flag = 'espteamswitch',
-        Callback = function(first)
-            cheat.EspLibrary.main_settings.teamcheck = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'sleeper check',
-        CurrentValue = false,
-        Flag = 'espsleeperswitch',
-        Callback = function(first)
-            cheat.EspLibrary.main_settings.sleepcheck = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ----------------------------------------------------------
-    espb:CreateToggle({
-        Name = 'box esp',
-        CurrentValue = false,
-        Flag = 'espbox',
-        Callback = function(first)
-            es.box = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'box color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'espboxcolor',
-        Callback = function(Value)
-            es.box_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-    espb:CreateToggle({
-        Name = 'box fill',
-        CurrentValue = false,
-        Flag = 'espboxfill',
-        Callback = function(first)
-            es.box_fill = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'box fill color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'espboxfillcolor',
-        Callback = function(Value)
-            es.box_fill_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-    espb:CreateToggle({
-        Name = 'box outline',
-        CurrentValue = false,
-        Flag = 'espoutlinebox',
-        Callback = function(first)
-            es.box_outline = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'box outline color',
-        Color = Color3.new(),
-        Flag = 'espboxoutlinecolor',
-        Callback = function(Value)
-            es.box_outline_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-    ----------------------------------------------------------
-    espb:CreateToggle({
-        Name = 'name esp',
-        CurrentValue = false,
-        Flag = 'esprealname',
-        Callback = function(first)
-            es.realname = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'name color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'esprealnamecolor',
-        Callback = function(Value)
-            es.realname_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-
-    ----------------------------------------------------------
-    espb:CreateToggle({
-        Name = 'distance esp',
-        CurrentValue = false,
-        Flag = 'espdistance',
-        Callback = function(first)
-            es.dist = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'distance color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'espdistancecolor',
-        Callback = function(Value)
-            es.dist_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-    ----------------------------------------------------------
-    espb:CreateToggle({
-        Name = 'skeleton esp',
-        CurrentValue = false,
-        Flag = 'espskeleton',
-        Callback = function(first)
-            es.skeleton = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'skeleton color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'espskeletoncolor',
-        Callback = function(Value)
-            es.skeleton_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ----------------------------------------------------------
-    espb:CreateToggle({
-        Name = 'chams',
-        CurrentValue = false,
-        Flag = 'espchams',
-        Callback = function(first)
-            es.chams = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'chams visible only',
-        CurrentValue = false,
-        Flag = 'espchamsvisibleonly',
-        Callback = function(first)
-            es.chams_visible_only = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-    espb:CreateLabel({Text = "chams fill color"})
-    espb:CreateColorPicker({
-        Name = 'chams fill color',
-        Color = Color3.new(),
-        Flag = 'espchamsfillcolor',
-        Callback = function(Value)
-            es.chams_fill_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    ---
-    ----------------------------------------------------------
-end
-do
-    local espb = ObjectESPSection
-    local es = cheat.EspLibrary.settings.object
-    espb:CreateDropdown({
-        Name = 'esp font',
-        Options = { 'UI', 'System', 'Plex', 'Monospace' },
-        CurrentOption = {'Monospace'},
-        MultiSelect = false,
-        Flag = 'objectespfont',
-        Callback = function(Value)
-            cheat.EspLibrary.main_object_settings.textFont = Drawing.Fonts[Value[1]]
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateSlider({
-        Name = 'esp font size',
-        Range = {1, 30},
-        Increment = 1,
-        CurrentValue = 13,
-        Flag = 'objectespfontsize',
-        Callback = function(State)
-            cheat.EspLibrary.main_object_settings.textSize = State
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateDropdown({
-        Name = 'objects',
-        Options = {
-            'ATV', 'Stone', 'Nitrate', 'Iron', 'Backpack',
-            'Tree1', 'Tree2', 'Tree3', 'Tree4',
-            'TeslaPylon', 'GasTrap', 'ClaimTotem'
-        },
-        CurrentOption = {},
-        MultiSelect = true,
-        Flag = 'objectespallowed',
-        Callback = function(Value)
-            cheat.EspLibrary.main_object_settings.allowed = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'enable esp',
-        CurrentValue = false,
-        Flag = 'objectespswitch',
-        Callback = function(first)
-            es.enabled = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateToggle({
-        Name = 'name esp',
-        CurrentValue = false,
-        Flag = 'objectesprealname',
-        Callback = function(first)
-            es.realname = first
-            cheat.EspLibrary.icaca()
-        end
-    })
-    espb:CreateColorPicker({
-        Name = 'name color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'objectesprealnamecolor',
-        Callback = function(Value)
-            es.realname_color[1] = Value
-            cheat.EspLibrary.icaca()
-        end
-    })
-end
-local canuseimages = pcall(function()
-    cheat.utility.new_drawing("Image", {}):Remove()
-end) and pcall(function()
-    local a = cheat.utility.new_drawing("Image", {})
-    rawget(a, "_frame").Image = ""
-    a:Remove()
-end)
-do
-    local enabled, dynamic = false, false;
-    local color1, color2 = Color3.new(1,1,1), Color3.new();
-    local watermarktab = CheatVisualsSection
-    local watermarktoggle = watermarktab:CreateToggle({
-        Name = 'enabled',
-        CurrentValue = false,
-        Flag = 'watermark_enabled',
-        Callback = function(first)
-            enabled = first
-        end
-    })
-    watermarktab:CreateColorPicker({
-        Name = canuseimages and 'color left' or 'color',
-        Color = Color3.new(),
-        Flag = 'watermark_color1',
-        Callback = function(Value)
-            color1 = Value
-            if not canuseimages then color2 = Value end
-        end
-    })
-    if canuseimages then
-        watermarktab:CreateColorPicker({
-            Name = 'color right',
-            Color = Color3.new(),
-            Flag = 'watermark_color2',
-            Callback = function(Value)
-                color2 = Value
-            end
-        })
-    end
-    watermarktab:CreateToggle({
-        Name = 'rainbow',
-        CurrentValue = false,
-        Flag = 'watermark_rainbowcolor',
-        Callback = function(first)
-            dynamic = first
-        end
-    })
-    local leftcolor, rightcolor, watertext = 
-    Color3.new(0.000000, 0.666667, 0.333333), 
-    Color3.new(0.349020, 0.000000, 1.000000),
-    "swimhub.xyz canary | Jul 28 2024 | fps: 63 ";
-    local waterpos = Vector2.new(10, 10);
-    local text = cheat.utility.new_drawing("Text", {
-        ZIndex = 4,
-        Visible = true,
-        Transparency = 1,
-        Position = waterpos + Vector2.new(6, 5),
-        Color = Color3.new(1, 1, 1),
-        Outline = true,
-        OutlineColor = Color3.new(),
-        Font = 0,
-        Size = 14,
-        Text = watertext
-    });
-    local gradr, gradl = cheat.utility.new_drawing(canuseimages and "Image" or "Square", {
-        ZIndex = 2,
-        Visible = true,
-        Transparency = 1,
-        Position = waterpos,
-        Size = Vector2.new(text.TextBounds.X + 10, text.TextBounds.Y + 10),
-        Color = rightcolor
-    }), cheat.utility.new_drawing(canuseimages and "Image" or "Square", {
-        ZIndex = 2,
-        Visible = true,
-        Transparency = 1,
-        Position = waterpos,
-        Size = Vector2.new(text.TextBounds.X + 10, text.TextBounds.Y + 10),
-        Color = leftcolor
-    });
-    local gradbackground = cheat.utility.new_drawing("Square", {
-        ZIndex = 1,
-        Visible = true,
-        Transparency = 1,
-        Position = waterpos,
-        Size = Vector2.new(text.TextBounds.X + 10, text.TextBounds.Y + 10),
-        Color = leftcolor:Lerp(rightcolor, 0.5),
-        Filled = true
-    });
-    local textbackground = cheat.utility.new_drawing("Square", {
-        ZIndex = 3,
-        Visible = true,
-        Transparency = 0.337,
-        Position = waterpos + Vector2.new(2, 2),
-        Size = Vector2.new(text.TextBounds.X + 6, text.TextBounds.Y + 6),
-        Color = Color3.new(0,0,0),
-Filled = true,
-        Thickness = 0,
-    });
-    if canuseimages then
-        -- Gradient images disabled (assets removed).
-    end
-end
-local hue1, hue2, fpstimer, fps, finalfps = 0, 0.15, tick(), 0, 60;
-    cheat.utility.new_renderstepped(LPH_JIT_MAX(function(delta)
-        fps = fps + 1;
-        if fpstimer + 1 <= tick() then
-            fpstimer = tick();
-            finalfps = fps;
-            fps = 0;
-        end;
-        hue1, hue2 = tick() % 1, tick() % 1 + 0.15;
-        if hue1 >= 1 then hue1 = 0 end if hue2 >= 1 then hue2 = 0 end
-        rightcolor = dynamic and Color3.fromHSV(hue1, 1, 1) or color2;
-        leftcolor = dynamic and Color3.fromHSV(hue2, 1, 1) or color1;
-        watertext = ("swimhub %s | %s | %s | %s fps"):format(SWG_Version, SWG_ShortName, os.date("%b %d %Y"), tostring(finalfps));
-        gradr.Color = rightcolor;
-        gradl.Color = leftcolor;
-        gradbackground.Color = gradr.Color:Lerp(gradl.Color, 0.5);
-        textbackground.Size = Vector2.new(text.TextBounds.X + 7, text.TextBounds.Y + 6);
-        textbackground.Position = waterpos + Vector2.new(2, 2);
-        gradbackground.Size = Vector2.new(text.TextBounds.X + 11, text.TextBounds.Y + 10);
-        gradbackground.Position = waterpos;
-        gradl.Position = waterpos;
-        gradl.Size = Vector2.new(text.TextBounds.X + 11, text.TextBounds.Y + 10);
-        gradr.Position = waterpos;
-        gradr.Size = Vector2.new(text.TextBounds.X + 11, text.TextBounds.Y + 10);
-        text.Position = waterpos + Vector2.new(6, 5);
-        text.Text = watertext;
-
-        text.Visible = enabled;
-        gradl.Visible = enabled;
-        gradr.Visible = enabled;
-        gradbackground.Visible = enabled;
-        textbackground.Visible = enabled;
-    end))
-end
-
-do
-    local WorldTab = WorldVisualsSection
-    local time = 12
-    local timechanger = false
-    WorldTab:CreateToggle({
-        Name = 'enable time changer',
-        CurrentValue = false,
-        Flag = 'enabletimechanger',
-        Callback = function(first)
-            timechanger = first
-        end
-    })
-    WorldTab:CreateSlider({
-        Name = 'time changer',
-        Range = {0, 24},
-        Increment = 0.1,
-        CurrentValue = mathround(Lighting.ClockTime),
-        Flag = 'timechanger',
-        Callback = function(State)
-            time = State
-        end
-    })
-    cheat.utility.new_heartbeat(function()
-        if timechanger then
-            Lighting.ClockTime = time
-        end
-    end)
-end
-
-do
-    local cursor = {
-        Enabled = false,
-        CustomPos = false,
-        Position = _Vector2new(0, 0),
-        Speed = 5,
-        Radius = 25,
-        Color = Color3.fromRGB(180, 50, 255),
-        Thickness = 1.7,
-        Outline = false,
-        Resize = false,
-        Dot = false,
-        Gap = 10,
-        TheGap = false,
-        Font = Drawing.Fonts.Monospace,
-        Text = {
-            Logo = false,
-            LogoColor = Color3.new(1, 1, 1),
-            Name = false,
-            NameColor = Color3.new(1, 1, 1),
-            LogoFadingOffset = 0,
-        }
+    local corners = {
+        Vector3.new(-half.X, -half.Y, -half.Z),
+        Vector3.new(-half.X, -half.Y, half.Z),
+        Vector3.new(-half.X, half.Y, -half.Z),
+        Vector3.new(-half.X, half.Y, half.Z),
+        Vector3.new(half.X, -half.Y, -half.Z),
+        Vector3.new(half.X, -half.Y, half.Z),
+        Vector3.new(half.X, half.Y, -half.Z),
+        Vector3.new(half.X, half.Y, half.Z),
     }
-    local CrosshairTab = CrosshairSection
-    cursor.rainbow = false
-    cursor.sussy = false
-    CrosshairTab:CreateToggle({
-        Name = 'enable crosshair',
-        CurrentValue = false,
-        Flag = 'crosshairenable',
-        Callback = function(first)
-            cursor.Enabled = first
-        end
-    })
-    CrosshairTab:CreateColorPicker({
-        Name = 'crosshair color',
-        Color = Color3.new(1, 1, 1),
-        Flag = 'crosshaircolor',
-        Callback = function(Value)
-            cursor.Color = Value
-        end
-    })
-    CrosshairTab:CreateSlider({
-        Name = 'speed',
-        Range = {0.1, 15},
-        Increment = 0.1,
-        CurrentValue = 3,
-        Flag = 'crosshairspeed',
-        Callback = function(State)
-            cursor.Speed = State / 10
-        end
-    })
-    CrosshairTab:CreateSlider({
-        Name = 'radius',
-        Range = {0.1, 100},
-        Increment = 0.1,
-        CurrentValue = 25,
-        Flag = 'crosshairradius',
-        Callback = function(State)
-            cursor.Radius = State
-        end
-    })
-    CrosshairTab:CreateSlider({
-        Name = 'thickness',
-        Range = {0.1, 10},
-        Increment = 0.1,
-        CurrentValue = 1.5,
-        Flag = 'crosshairthickness',
-        Callback = function(State)
-            cursor.Thickness = State
-        end
-    })
-    CrosshairTab:CreateSlider({
-        Name = 'gap',
-        Range = {0, 50},
-        Increment = 1,
-        CurrentValue = 5,
-        Flag = 'crosshairgapsize',
-        Callback = function(State)
-            cursor.Gap = State
-        end
-    })
-    CrosshairTab:CreateToggle({
-        Name = 'math divide gap',
-        CurrentValue = false,
-        Flag = 'crosshairenablegap',
-        Callback = function(first)
-            cursor.TheGap = first
-        end
-    })
-    CrosshairTab:CreateToggle({
-        Name = 'outline',
-        CurrentValue = false,
-        Flag = 'crosshairenableoutline',
-        Callback = function(first)
-            cursor.Outline = first
-        end
-    })
-    CrosshairTab:CreateToggle({
-        Name = 'resize animation',
-        CurrentValue = false,
-        Flag = 'crosshairenableresize',
-        Callback = function(first)
-            cursor.Resize = first
-        end
-    })
-    CrosshairTab:CreateToggle({
-        Name = 'dot',
-        CurrentValue = false,
-        Flag = 'crosshairenabledot',
-        Callback = function(first)
-            cursor.Dot = first
-        end
-    })
 
-    -- // Initilisation
-    local lines = {}
-    -- // Drawings
-    local outline = cheat.utility.new_drawing("Square", {
-        Visible = true,
-        Size = _Vector2new(4, 4),
-        Color = Color3.fromRGB(0, 0, 0),
-        Filled = true,
-        ZIndex = 1,
-        Transparency = 1
-    })
-    --
-    local dot = cheat.utility.new_drawing("Square", {
-        Visible = true,
-        Size = _Vector2new(2, 2),
-        Color = cursor.Color,
-        Filled = true,
-        ZIndex = 2,
-        Transparency = 1
-    })
-    --
-    local logotext = cheat.utility.new_drawing("Text", {
-        Visible = false,
-        Font = cursor.Font,
-        Size = 13,
-        Color = Color3.fromRGB(138, 128, 255),
-        ZIndex = 3,
-        Transparency = 1,
-        Text = "swimhub.xyz",
-        Center = true,
-        Outline = true,
-    })
-    for i = 1, 4 do
-        local line_outline = cheat.utility.new_drawing("Line", {
-            Visible = true,
-            From = _Vector2new(200, 500),
-            To = _Vector2new(200, 500),
-            Color = Color3.fromRGB(0, 0, 0),
-            Thickness = cursor.Thickness + 2.5,
-            ZIndex = 1,
-            Transparency = 1
-        })
-        local line = cheat.utility.new_drawing("Line", {
-            Visible = true,
-            From = _Vector2new(200, 500),
-            To = _Vector2new(200, 500),
-            Color = cursor.Color,
-            Thickness = cursor.Thickness,
-            ZIndex = 2,
-            Transparency = 1
-        })
-        local naziline = cheat.utility.new_drawing("Line", {
-            Visible = true,
-            From = _Vector2new(200, 500),
-            To = _Vector2new(200, 500),
-            Color = cursor.Color,
-            Thickness = cursor.Thickness,
-            ZIndex = 2,
-            Transparency = 1
-        })
-        lines[i] = { line, line_outline, naziline }
-    end
-    local angle = 0
-    local transp = 0
-    local reverse = false
-    local timetext = 0
-    local function setreverse(value)
-        if reverse ~= value then
-            reverse = value
+    local anyFront = false
+
+    for _, localPoint in ipairs(corners) do
+        local worldPoint = part.CFrame:PointToWorldSpace(localPoint)
+        local screenPoint = camera:WorldToViewportPoint(worldPoint)
+
+        if screenPoint.Z > 0 then
+            anyFront = true
+            minX = math.min(minX, screenPoint.X)
+            minY = math.min(minY, screenPoint.Y)
+            maxX = math.max(maxX, screenPoint.X)
+            maxY = math.max(maxY, screenPoint.Y)
         end
     end
-    local transparenting = 0
-    cheat.utility.new_renderstepped(function(delta)
-        local mousex = Mouse.X
-        local mousey = Mouse.Y
-        local pos = _Vector2new(mousex, mousey)
-        local gapx = cursor.TheGap and cursor.Gap / math.max(cursor.Thickness, 0.1) or cursor.Gap
-        local ex = cursor.Enabled and cursor.Radius + transp * 2 or 0
-        local gap = cursor.Enabled and gapx + (transp / (cursor.Resize and 2 or 1)) or 0
-        local angle1 = _Vector2new(math.cos(angle) * ex, math.sin(angle) * ex)
-        local angle2 = _Vector2new(-math.sin(angle) * ex, math.cos(angle) * ex)
-        local line_offset = _Vector2new(
-            math.floor(angle1.X * (cursor.Radius / 15)),
-            math.floor(angle1.Y * (cursor.Radius / 15))
-        )
-        for i = 1, 4 do
-            local line, line_outline, naziline = lines[i][1], lines[i][2], lines[i][3]
-            local from, to
-            if i == 1 then
-                from = pos + _Vector2new(gap, 0)
-                to = pos + _Vector2new(gap + ex, 0)
-            elseif i == 2 then
-                from = pos - _Vector2new(gap, 0)
-                to = pos - _Vector2new(gap + ex, 0)
-            elseif i == 3 then
-                from = pos + _Vector2new(0, gap)
-                to = pos + _Vector2new(0, gap + ex)
-            else
-                from = pos - _Vector2new(0, gap)
-                to = pos - _Vector2new(0, gap + ex)
-            end
-            local col = cursor.rainbow and Color3.fromHSV(angle % 1, 1, 1) or cursor.Color
-            line.Color = col
-            naziline.Color = col
-            line.From = from
-            line.To = to
-            line.Thickness = cursor.Thickness
-            line.Visible = cursor.Enabled
-            line.Transparency = transp
-            line_outline.From = from + line_offset
-            line_outline.To = to + line_offset
-            line_outline.Thickness = cursor.Thickness + 2.5
-            line_outline.Visible = cursor.Enabled
-            line_outline.Transparency = transp
-            if cursor.sussy then
-                naziline.From = from + _Vector2new(line_offset.Y, -line_offset.X)
-                naziline.To = to + _Vector2new(line_offset.Y, -line_offset.X)
-                naziline.Thickness = cursor.Thickness
-                naziline.Visible = cursor.Enabled
-                naziline.Transparency = transp
-            else
-                naziline.Visible = false
-            end
-        end
-        outline.Position = pos - _Vector2new(cursor.Thickness, cursor.Thickness)
-        outline.Size = _Vector2new(cursor.Thickness * 2, cursor.Thickness * 2)
-        outline.Visible = cursor.Enabled
-        outline.Transparency = cursor.Outline and transp or 1
-        dot.Position = pos - _Vector2new(1, 1)
-        dot.Visible = cursor.Enabled and cursor.Dot
-        dot.Transparency = transp
-        logotext.Position = pos + _Vector2new(ex + 2, 0)
-        logotext.Visible = cursor.Enabled and cursor.Text.Logo
-        if not cursor.Text.Logo then
-            logotext.Transparency = 1
-        elseif transparenting >= 1 then
-            transparenting = 0
-        else
-            transparenting = transparenting + 0.1
-        end
-        logotext.Transparency = 1 - (cursor.Text.Logo and transparenting or 0)
-        timetext = timetext + delta
-        if timetext >= 0.5 then
-            setreverse(true)
-            timetext = 0.5
-        end
-        if reverse then
-            if transp > 0 then
-                transp = math.max(0, transp - delta)
-            else
-                setreverse(false)
-            end
-        else
-            if transp < 0.5 then
-                transp = math.min(0.5, transp + delta)
-            end
-        end
-        angle = angle + delta * 1.4
-    end)
+
+    return minX, minY, maxX, maxY, anyFront
 end
 
-do
-    local mvb = MovementSection
-    local bhop_enabled, speed = false, 55
-    local forcesprint = false
-    mvb:CreateToggle({
-        Name = 'forcesprint',
-        CurrentValue = false,
-        Flag = 'speedhack_forcesprint',
-        Callback = function(first)
-            forcesprint = first
-        end
-    })
-    mvb:CreateToggle({
-        Name = 'speedhack enabled',
-        CurrentValue = false,
-        Flag = 'speedhack_enabled',
-        Callback = function(first)
-            bhop_enabled = first
-        end
-    })
-    mvb:CreateSlider({
-        Name = 'speed',
-        Range = {55, 70},
-        Increment = 1,
-        CurrentValue = 55,
-        Suffix = "sps",
-        Flag = 'speedhack_speed',
-        Callback = function(State)
-            speed = State
-        end
-    })
-    local niga, wtf = speed, 0
-    local middle = trident.middlepart
-    cheat.utility.new_renderstepped(LPH_JIT_MAX(function(delta)
-        if bhop_enabled and middle and _IsKeyDown(UserInputService, Enum.KeyCode.C) and _IsKeyDown(UserInputService, Enum.KeyCode.LeftShift) then
-            local cameralook = Camera.CFrame.LookVector
-            cameralook = _Vector3new(cameralook.X, 0, cameralook.Z)
-            local direction = Vector3.zero
-            direction = _IsKeyDown(UserInputService, Enum.KeyCode.W) and direction + cameralook or direction;
-            direction = _IsKeyDown(UserInputService, Enum.KeyCode.S) and direction - cameralook or direction;
-            direction = _IsKeyDown(UserInputService, Enum.KeyCode.D) and direction + _Vector3new(- cameralook.Z, 0, cameralook.X) or direction;
-            direction = _IsKeyDown(UserInputService, Enum.KeyCode.A) and direction + _Vector3new(cameralook.Z, 0, - cameralook.X) or direction;
-            if not (direction == Vector3.zero) then
-                direction = direction.Unit
+local function projectBodyBoundingBox(character)
+    if not character then
+        return nil
+    end
+
+    local camera = getCamera()
+
+    if not camera then
+        return nil
+    end
+
+    local minimumX = math.huge
+    local minimumY = math.huge
+    local maximumX = -math.huge
+    local maximumY = -math.huge
+    local foundBodyPart = false
+
+    for _, name in ipairs(BODY_PART_NAMES) do
+        local part = character:FindFirstChild(name)
+
+        if part and part:IsA("BasePart") then
+            local partMinX, partMinY, partMaxX, partMaxY, partInFront =
+                projectPartBounds(
+                    camera,
+                    part,
+                    minimumX,
+                    minimumY,
+                    maximumX,
+                    maximumY
+                )
+
+            minimumX = partMinX
+            minimumY = partMinY
+            maximumX = partMaxX
+            maximumY = partMaxY
+
+            if partInFront then
+                foundBodyPart = true
             end
-            niga = math.clamp(niga-delta*20, 17, speed)
-            if wtf == 0 then
-                middle.CFrame = middle.CFrame + _Vector3new(0, 6.5, 0)
+        end
+    end
+
+    -- Fallback: some games use custom body part names.
+    if not foundBodyPart then
+        local ok, boxCFrame, boxSize =
+            pcall(function()
+                return character:GetBoundingBox()
+            end)
+
+        if not ok or not boxCFrame or not boxSize then
+            return nil
+        end
+
+        local half = boxSize * 0.5
+
+        local corners = {
+            Vector3.new(-half.X, -half.Y, -half.Z),
+            Vector3.new(-half.X, -half.Y, half.Z),
+            Vector3.new(-half.X, half.Y, -half.Z),
+            Vector3.new(-half.X, half.Y, half.Z),
+            Vector3.new(half.X, -half.Y, -half.Z),
+            Vector3.new(half.X, -half.Y, half.Z),
+            Vector3.new(half.X, half.Y, -half.Z),
+            Vector3.new(half.X, half.Y, half.Z),
+        }
+
+        for _, localPoint in ipairs(corners) do
+            local worldPoint = boxCFrame:PointToWorldSpace(localPoint)
+            local screenPoint = camera:WorldToViewportPoint(worldPoint)
+
+            if screenPoint.Z > 0 then
+                foundBodyPart = true
+                minimumX = math.min(minimumX, screenPoint.X)
+                minimumY = math.min(minimumY, screenPoint.Y)
+                maximumX = math.max(maximumX, screenPoint.X)
+                maximumY = math.max(maximumY, screenPoint.Y)
             end
-            middle.AssemblyLinearVelocity = _Vector3new(
-                direction.X * niga,
-                wtf < 0.85 and 0 or -7,
-                direction.Z * niga
+        end
+    end
+
+    if not foundBodyPart then
+        return nil
+    end
+
+    local width = maximumX - minimumX
+    local height = maximumY - minimumY
+
+    if width <= 1 or height <= 1 then
+        return nil
+    end
+
+    local viewport = camera.ViewportSize
+
+    -- Keep the visible box on the drawable screen when a body is partially offscreen.
+    minimumX = clamp(minimumX, -width, viewport.X + width)
+    minimumY = clamp(minimumY, -height, viewport.Y + height)
+    maximumX = clamp(maximumX, -width, viewport.X + width)
+    maximumY = clamp(maximumY, -height, viewport.Y + height)
+
+    return {
+        x = minimumX,
+        y = minimumY,
+        width = maximumX - minimumX,
+        height = maximumY - minimumY,
+    }
+end
+
+-- ================================================================
+-- 2D BOX BUILDER
+-- ================================================================
+
+local function makeLine(parent, name)
+    local line = Instance.new("Frame")
+    line.Name = name
+    line.BorderSizePixel = 0
+    line.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+    line.Size = UDim2.fromOffset(1.5, 1.5)
+    line.Parent = parent
+
+    return line
+end
+
+local function createCornerBox(parent)
+    local holder = Instance.new("Frame")
+    holder.Name = "CornerBox"
+    holder.BackgroundTransparency = 1
+    holder.BorderSizePixel = 0
+    holder.Visible = false
+    holder.Parent = parent
+
+    local thickness = 2
+    local cornerRatio = 0.20
+
+    local TL_H = makeLine(holder, "TL_H")
+    local TL_V = makeLine(holder, "TL_V")
+    local TR_H = makeLine(holder, "TR_H")
+    local TR_V = makeLine(holder, "TR_V")
+    local BL_H = makeLine(holder, "BL_H")
+    local BL_V = makeLine(holder, "BL_V")
+    local BR_H = makeLine(holder, "BR_H")
+    local BR_V = makeLine(holder, "BR_V")
+
+    local parts = {
+        TL_H, TL_V, TR_H, TR_V,
+        BL_H, BL_V, BR_H, BR_V,
+    }
+
+    local function apply(width, height, color)
+        local horizontal = math.max(8, width * cornerRatio)
+        local vertical = math.max(8, height * cornerRatio)
+
+        TL_H.Position = UDim2.fromOffset(0, 0)
+        TL_H.Size = UDim2.fromOffset(horizontal, thickness)
+
+        TL_V.Position = UDim2.fromOffset(0, 0)
+        TL_V.Size = UDim2.fromOffset(thickness, vertical)
+
+        TR_H.Position = UDim2.fromOffset(width - horizontal, 0)
+        TR_H.Size = UDim2.fromOffset(horizontal, thickness)
+
+        TR_V.Position = UDim2.fromOffset(width - thickness, 0)
+        TR_V.Size = UDim2.fromOffset(thickness, vertical)
+
+        BL_H.Position = UDim2.fromOffset(0, height - thickness)
+        BL_H.Size = UDim2.fromOffset(horizontal, thickness)
+
+        BL_V.Position = UDim2.fromOffset(0, height - vertical)
+        BL_V.Size = UDim2.fromOffset(thickness, vertical)
+
+        BR_H.Position = UDim2.fromOffset(width - horizontal, height - thickness)
+        BR_H.Size = UDim2.fromOffset(horizontal, thickness)
+
+        BR_V.Position = UDim2.fromOffset(width - thickness, height - vertical)
+        BR_V.Size = UDim2.fromOffset(thickness, vertical)
+
+        for _, line in ipairs(parts) do
+            line.BackgroundColor3 = color
+        end
+    end
+
+    return holder, apply
+end
+
+-- ================================================================
+-- ESP OBJECTS
+-- ================================================================
+
+local function removeESP(player)
+    local data = ESP[player]
+
+    if not data then
+        return
+    end
+
+    if data.Root then
+        data.Root:Destroy()
+    end
+
+    if data.Snapline then
+        data.Snapline:Destroy()
+    end
+
+    if data.Highlight then
+        data.Highlight:Destroy()
+    end
+
+    ESP[player] = nil
+end
+
+local function createESP(player)
+    if ESP[player] then
+        return ESP[player]
+    end
+
+    local root = Instance.new("Frame")
+    root.Name = "ESP_" .. player.Name
+    root.BackgroundTransparency = 1
+    root.BorderSizePixel = 0
+    root.Size = UDim2.fromOffset(1, 1)
+    root.Visible = false
+    root.ZIndex = 90
+    root.Parent = Overlay
+
+    local outline = Instance.new("Frame")
+    outline.Name = "Box"
+    outline.BackgroundTransparency = 1
+    outline.BorderSizePixel = 1
+    outline.Visible = false
+    outline.Parent = root
+
+    local outlineStroke = Instance.new("UIStroke")
+    outlineStroke.Thickness = 1.4
+    outlineStroke.Parent = outline
+
+    local cornerBox, updateCornerBox = createCornerBox(root)
+
+    local info = Instance.new("TextLabel")
+    info.Name = "Info"
+    info.AnchorPoint = Vector2.new(0.5, 1)
+    info.BackgroundTransparency = 1
+    info.TextColor3 = Color3.new(1, 1, 1)
+    info.TextStrokeTransparency = 0.20
+    info.Font = Enum.Font.GothamBold
+    info.TextSize = 13
+    info.TextXAlignment = Enum.TextXAlignment.Center
+    info.TextYAlignment = Enum.TextYAlignment.Bottom
+    info.Visible = false
+    info.ZIndex = 95
+    info.Parent = root
+
+    local snapline = Instance.new("Frame")
+    snapline.Name = "Snapline"
+    snapline.AnchorPoint = Vector2.new(0, 0.5)
+    snapline.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+    snapline.BorderSizePixel = 0
+    snapline.Size = UDim2.fromOffset(0, 1.5)
+    snapline.Visible = false
+    snapline.ZIndex = 85
+    snapline.Parent = Overlay
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "OverSeekHighlight"
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillTransparency = 1
+    highlight.OutlineTransparency = 0
+    highlight.Enabled = false
+    highlight.Parent = Overlay
+
+    local data = {
+        Root = root,
+        Outline = outline,
+        OutlineStroke = outlineStroke,
+        CornerBox = cornerBox,
+        UpdateCornerBox = updateCornerBox,
+        Info = info,
+        Snapline = snapline,
+        Highlight = highlight,
+    }
+
+    ESP[player] = data
+
+    return data
+end
+
+local function updateSnapline(line, destination, color)
+    local center = getScreenCenter()
+    local delta = destination - center
+    local length = delta.Magnitude
+
+    if length <= 2 then
+        line.Visible = false
+        return
+    end
+
+    line.Position = UDim2.fromOffset(
+        center.X,
+        center.Y
+    )
+
+    line.Size = UDim2.fromOffset(
+        length,
+        1.5
+    )
+
+    line.Rotation = math.deg(
+        math.atan2(delta.Y, delta.X)
+    )
+
+    line.BackgroundColor3 = color
+    line.Visible = true
+end
+
+local function updateESPPlayer(player)
+    if player == LocalPlayer then
+        return
+    end
+
+    local data = createESP(player)
+    local character = getCharacter(player)
+    local rootPart = getRoot(character)
+
+    if not State.ESPEnabled and not State.Snapline then
+        data.Root.Visible = false
+        data.Snapline.Visible = false
+        data.Highlight.Enabled = false
+        return
+    end
+
+    if not character
+        or not character.Parent
+        or not isAlive(character)
+        or not withinRenderDistance(character) then
+
+        data.Root.Visible = false
+        data.Snapline.Visible = false
+        data.Highlight.Enabled = false
+        return
+    end
+
+    if not State.Teammates and isTeammate(player) then
+        data.Root.Visible = false
+        data.Snapline.Visible = false
+        data.Highlight.Enabled = false
+        return
+    end
+
+    local color =
+        (player.TeamColor and player.TeamColor.Color)
+        or Color3.fromRGB(0, 150, 255)
+
+    local box = projectBodyBoundingBox(character)
+
+    if box then
+        data.Root.Visible = State.ESPEnabled
+        data.Root.Position = UDim2.fromOffset(box.x, box.y)
+        data.Root.Size = UDim2.fromOffset(box.width, box.height)
+
+        data.Outline.Visible =
+            State.ESPEnabled
+            and State.Box
+            and not State.CornerBoxes
+
+        data.OutlineStroke.Color = color
+
+        data.CornerBox.Visible =
+            State.ESPEnabled
+            and State.Box
+            and State.CornerBoxes
+
+        if data.CornerBox.Visible then
+            data.CornerBox.Size = UDim2.fromOffset(
+                box.width,
+                box.height
             )
-            wtf = wtf + delta
-        else
-            if forcesprint and middle then
-                local cameralook = Camera.CFrame.LookVector
-                cameralook = _Vector3new(cameralook.X, 0, cameralook.Z)
-                local direction = Vector3.zero
-                direction = _IsKeyDown(UserInputService, Enum.KeyCode.W) and direction + cameralook or direction;
-                direction = _IsKeyDown(UserInputService, Enum.KeyCode.S) and direction - cameralook or direction;
-                direction = _IsKeyDown(UserInputService, Enum.KeyCode.D) and direction + _Vector3new(- cameralook.Z, 0, cameralook.X) or direction;
-                direction = _IsKeyDown(UserInputService, Enum.KeyCode.A) and direction + _Vector3new(cameralook.Z, 0, - cameralook.X) or direction;
-                if not (direction == Vector3.zero) then
-                    direction = direction.Unit
-                end
-                middle.AssemblyLinearVelocity = _Vector3new(
-                    direction.X * 18,
-                    middle.AssemblyLinearVelocity.Y,
-                    direction.Z * 18
+
+            data.UpdateCornerBox(
+                box.width,
+                box.height,
+                color
+            )
+        end
+
+        local information = {}
+
+        if State.ShowName then
+            table.insert(information, player.Name)
+        end
+
+        if State.ShowDistance then
+            table.insert(
+                information,
+                string.format(
+                    "%dm",
+                    round(getDistance(character))
+                )
+            )
+        end
+
+        if State.ShowSleeping and isSleeping(character) then
+            table.insert(information, "SLEEPING")
+        end
+
+        if State.ShowScientists and isScientist(character) then
+            table.insert(information, "SCIENTIST")
+        end
+
+        if State.ShowGun then
+            local tool = character:FindFirstChildOfClass("Tool")
+
+            table.insert(
+                information,
+                tool and tool.Name or "No Gun"
+            )
+        end
+
+        data.Info.Text = table.concat(
+            information,
+            " | "
+        )
+
+        data.Info.TextColor3 = color
+        data.Info.Position = UDim2.new(
+            0.5,
+            0,
+            0,
+            -4
+        )
+
+        data.Info.Size = UDim2.fromOffset(
+            math.max(120, box.width + 100),
+            18
+        )
+
+        data.Info.Visible =
+            State.ESPEnabled
+            and #information > 0
+    else
+        data.Root.Visible = false
+        data.Highlight.Enabled = false
+    end
+
+    if State.Outline then
+        data.Highlight.Adornee = character
+        data.Highlight.OutlineColor = color
+        data.Highlight.Enabled = true
+    else
+        data.Highlight.Enabled = false
+    end
+
+    if State.Snapline and rootPart then
+        local camera = getCamera()
+
+        if camera then
+            local point, visible =
+                camera:WorldToViewportPoint(
+                    rootPart.Position
+                )
+
+            if visible and point.Z > 0 then
+                updateSnapline(
+                    data.Snapline,
+                    Vector2.new(
+                        point.X,
+                        point.Y
+                    ),
+                    color
+                )
+            else
+                data.Snapline.Visible = false
+            end
+        end
+    else
+        data.Snapline.Visible = false
+    end
+end
+
+local function updateESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        updateESPPlayer(player)
+    end
+
+    for player in pairs(ESP) do
+        if not player.Parent then
+            removeESP(player)
+        end
+    end
+end
+
+-- ================================================================
+-- SCIENTIST NPC ESP
+-- ================================================================
+
+local NPCESP = {}
+
+local function getNPCModels()
+    local result = {}
+
+    if not State.ShowScientists then
+        return result
+    end
+
+    for _, object in ipairs(Workspace:GetChildren()) do
+        if object:IsA("Model") then
+            local humanoid = getHumanoid(object)
+            local root = getRoot(object)
+
+            if humanoid
+                and root
+                and humanoid.Health > 0
+                and isScientist(object) then
+
+                table.insert(result, object)
+            end
+        end
+    end
+
+    return result
+end
+
+local function createNPCESP(model)
+    if NPCESP[model] then
+        return NPCESP[model]
+    end
+
+    local root = Instance.new("Frame")
+    root.Name = "NPCESP_" .. model.Name
+    root.BackgroundTransparency = 1
+    root.BorderSizePixel = 0
+    root.Visible = false
+    root.ZIndex = 90
+    root.Parent = Overlay
+
+    local box = Instance.new("Frame")
+    box.BackgroundTransparency = 1
+    box.BorderSizePixel = 1
+    box.Visible = false
+    box.Parent = root
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.4
+    stroke.Color = Color3.fromRGB(0, 150, 255)
+    stroke.Parent = box
+
+    local info = Instance.new("TextLabel")
+    info.AnchorPoint = Vector2.new(0.5, 1)
+    info.BackgroundTransparency = 1
+    info.Font = Enum.Font.GothamBold
+    info.TextSize = 13
+    info.TextStrokeTransparency = 0.2
+    info.TextColor3 = Color3.fromRGB(0, 150, 255)
+    info.Visible = false
+    info.Parent = root
+
+    local data = {
+        Root = root,
+        Box = box,
+        Info = info,
+    }
+
+    NPCESP[model] = data
+
+    return data
+end
+
+local function removeNPCESP(model)
+    local data = NPCESP[model]
+
+    if data then
+        data.Root:Destroy()
+        NPCESP[model] = nil
+    end
+end
+
+local function updateScientistESP()
+    if not State.ESPEnabled or not State.ShowScientists then
+        for model in pairs(NPCESP) do
+            removeNPCESP(model)
+        end
+        return
+    end
+
+    local seen = {}
+
+    for _, model in ipairs(getNPCModels()) do
+        seen[model] = true
+
+        local data = createNPCESP(model)
+        local distance = getDistance(model)
+        local box = projectBodyBoundingBox(model)
+
+        if distance <= State.RenderDistance and box then
+            data.Root.Visible = true
+            data.Root.Position = UDim2.fromOffset(box.x, box.y)
+            data.Root.Size = UDim2.fromOffset(box.width, box.height)
+
+            data.Box.Visible = State.Box
+            data.Info.Visible = State.ShowName or State.ShowDistance
+            data.Info.Position = UDim2.new(0.5, 0, 0, -4)
+            data.Info.Size = UDim2.fromOffset(
+                math.max(120, box.width + 100),
+                18
+            )
+
+            local parts = {}
+
+            if State.ShowName then
+                table.insert(parts, model.Name)
+            end
+
+            if State.ShowDistance then
+                table.insert(
+                    parts,
+                    string.format(
+                        "%dm",
+                        round(distance)
+                    )
                 )
             end
-            niga = speed
-            wtf = 0
+
+            data.Info.Text = table.concat(parts, " | ")
+        else
+            data.Root.Visible = false
+            data.Box.Visible = false
+            data.Info.Visible = false
         end
-    end))
+    end
+
+    for model in pairs(NPCESP) do
+        if not seen[model] or not model.Parent then
+            removeNPCESP(model)
+        end
+    end
 end
 
-do
-    local mvb = ExploitsSection
+-- ================================================================
+-- LOCAL HITBOX VISUALIZER
+-- ================================================================
 
-local enabled = false
-local speed = 55
-local fakecrouch_timer = tick()
+local function removeHitboxVisualizer(player)
+    local object = HitboxVisuals[player]
 
--- old adapter call removed: mvb:AddToggle("fakecrouch", ...
--- agora usa MiscTab:CreateToggle acima.
+    if object then
+        object:Destroy()
+        HitboxVisuals[player] = nil
+    end
+end
 
-local freecamoffset = Vector3.zero
+local function updateHitboxVisualizers()
+    if not State.HitboxVisualizer then
+        for player in pairs(HitboxVisuals) do
+            removeHitboxVisualizer(player)
+        end
+        return
+    end
 
-local middle, bottom, top = nil, nil, nil
-pcall(function()
-    middle = workspace.Const.Ignore.LocalCharacter.Middle
-    bottom = workspace.Const.Ignore.LocalCharacter.Bottom
-    top = workspace.Const.Ignore.LocalCharacter.Top
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local character = getCharacter(player)
+            local part = character and getPart(
+                character,
+                State.HitboxPart
+            )
+
+            if character
+                and part
+                and isAlive(character)
+                and withinRenderDistance(character) then
+
+                local box = HitboxVisuals[player]
+
+                if not box then
+                    box = Instance.new("BoxHandleAdornment")
+                    box.Name = "OverSeekHitboxVisualizer"
+                    box.AlwaysOnTop = true
+                    box.ZIndex = 5
+                    box.Transparency = 0.65
+                    box.Color3 = Color3.fromRGB(0, 150, 255)
+                    box.Parent = Overlay
+                    HitboxVisuals[player] = box
+                end
+
+                box.Adornee = part
+                box.Size = Vector3.new(
+                    State.HitboxX,
+                    State.HitboxY,
+                    State.HitboxZ
+                )
+            else
+                removeHitboxVisualizer(player)
+            end
+        end
+    end
+end
+
+-- ================================================================
+-- AIMBOT - LOCAL CAMERA ONLY
+-- ================================================================
+
+local function updateAimbot(deltaTime)
+    if State.AimMode ~= "Aimbot" then
+        return
+    end
+
+    if not State.AimEnabled then
+        return
+    end
+
+    local camera = getCamera()
+
+    if not camera then
+        return
+    end
+
+    local target = getClosestTarget()
+
+    if not target or not target.position then
+        return
+    end
+
+    local origin = camera.CFrame.Position
+    local targetCFrame = CFrame.lookAt(
+        origin,
+        target.position
+    )
+
+    local smooth = math.max(
+        State.AimSmooth,
+        0.1
+    )
+
+    local alpha = 1 - math.exp(
+        -smooth * deltaTime
+    )
+
+    alpha = clamp(alpha, 0.01, 0.95)
+
+    camera.CFrame = camera.CFrame:Lerp(
+        targetCFrame,
+        alpha
+    )
+end
+
+-- ================================================================
+-- QUICK BAR
+-- ================================================================
+
+local QuickBarGui = Instance.new("ScreenGui")
+QuickBarGui.Name = "OverSeek_QuickBar"
+QuickBarGui.ResetOnSpawn = false
+QuickBarGui.IgnoreGuiInset = true
+QuickBarGui.DisplayOrder = 1000000
+QuickBarGui.Parent = getGuiParent()
+
+local QuickBar = Instance.new("Frame")
+QuickBar.Name = "QuickBar"
+QuickBar.AnchorPoint = Vector2.new(0.5, 1)
+QuickBar.Position = UDim2.new(0.5, 0, 1, -18)
+QuickBar.Size = UDim2.fromOffset(300, 58)
+QuickBar.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
+QuickBar.BackgroundTransparency = 0.08
+QuickBar.BorderSizePixel = 0
+QuickBar.Visible = UserInputService.TouchEnabled
+QuickBar.Parent = QuickBarGui
+
+local QuickCorner = Instance.new("UICorner")
+QuickCorner.CornerRadius = UDim.new(0, 10)
+QuickCorner.Parent = QuickBar
+
+local QuickStroke = Instance.new("UIStroke")
+QuickStroke.Thickness = 1
+QuickStroke.Transparency = 0.2
+QuickStroke.Color = Color3.fromRGB(0, 120, 255)
+QuickStroke.Parent = QuickBar
+
+local QuickPadding = Instance.new("UIPadding")
+QuickPadding.PaddingLeft = UDim.new(0, 8)
+QuickPadding.PaddingRight = UDim.new(0, 8)
+QuickPadding.Parent = QuickBar
+
+local QuickLayout = Instance.new("UIListLayout")
+QuickLayout.FillDirection = Enum.FillDirection.Horizontal
+QuickLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+QuickLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+QuickLayout.Padding = UDim.new(0, 6)
+QuickLayout.Parent = QuickBar
+
+local QuickButtons = {}
+
+local function setQuickState(button, enabled)
+    if not button then
+        return
+    end
+
+    button.BackgroundColor3 = enabled
+        and Color3.fromRGB(0, 88, 160)
+        or Color3.fromRGB(28, 30, 36)
+end
+
+local function createQuickButton(label, callback)
+    local button = Instance.new("TextButton")
+    button.Name = "Quick_" .. label
+    button.Size = UDim2.fromOffset(50, 42)
+    button.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.Font = Enum.Font.GothamBold
+    button.TextSize = 12
+    button.Text = label
+    button.AutoButtonColor = true
+    button.Parent = QuickBar
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = button
+
+    button.Activated:Connect(callback)
+
+    return button
+end
+
+QuickButtons.AIM = createQuickButton("AIM", function()
+    if State.AimMode == "Off" then
+        State.AimMode = "Aimbot"
+
+        if UI.AimMode then
+            UI.AimMode:Set("Aimbot")
+        end
+    end
+
+    State.AimEnabled = not State.AimEnabled
+
+    if UI.AimEnabled then
+        UI.AimEnabled:Set(State.AimEnabled)
+    end
+
+    setQuickState(
+        QuickButtons.AIM,
+        State.AimEnabled and State.AimMode == "Aimbot"
+    )
 end)
 
-local _prism = top and top:FindFirstChild("Prism1")
-local originalprismcframe = _prism and _prism.CFrame or nil
-local pos = middle and middle.CFrame or CFrame.new()
+QuickButtons.ESP = createQuickButton("ESP", function()
+    State.ESPEnabled = not State.ESPEnabled
 
--- Toggle fake crouch now created nativamente via MiscTab:CreateToggle
--- (anteriormente via adapter mvb:AddToggle).
-MiscTab:CreateToggle({
-    Name = "fake crouch",
-    CurrentValue = false,
-    Flag = "fake_crouch",
-    Callback = function(first)
-        aimbot.silentwalk = first
-    end,
-})
-
--- Toggle longneck agora criado nativamente via MiscTab:CreateToggle
-MiscTab:CreateToggle({
-    Name = "long neck",
-    CurrentValue = false,
-    Flag = "long_neck",
-    Callback = function(first)
-        if top and top:FindFirstChild("Prism1") and originalprismcframe then
-            top.Prism1.CFrame =
-                first
-                and originalprismcframe - Vector3.yAxis * 5
-                or originalprismcframe
-        end
-    end,
-})
-
-cheat.utility.new_heartbeat(LPH_JIT_MAX(function(delta)
-
-    if tick() - fakecrouch_timer >= 0.15 then
-        if trident.tcp then
-            pcall(function() trident.tcp:FireServer(2, true) end)
-        end
-        fakecrouch_timer = tick()
+    if UI.ESPEnabled then
+        UI.ESPEnabled:Set(State.ESPEnabled)
     end
 
-    if enabled and middle then
+    setQuickState(
+        QuickButtons.ESP,
+        State.ESPEnabled
+    )
+end)
 
-        middle.CFrame = pos
+QuickButtons.FOV = createQuickButton("FOV", function()
+    State.FOVCircle = not State.FOVCircle
 
-        RunService.RenderStepped:Wait()
-
-        if middle then
-
-            local cameralook = Camera.CFrame.LookVector
-            local direction = Vector3.zero
-
-            if _IsKeyDown(UserInputService, Enum.KeyCode.W) then
-                direction = direction + cameralook
-            end
-
-            if _IsKeyDown(UserInputService, Enum.KeyCode.S) then
-                direction = direction - cameralook
-            end
-
-            if _IsKeyDown(UserInputService, Enum.KeyCode.D) then
-                direction = direction + _Vector3new(
-                    -cameralook.Z,
-                    0,
-                    cameralook.X
-                )
-            end
-
-            if _IsKeyDown(UserInputService, Enum.KeyCode.A) then
-                direction = direction + _Vector3new(
-                    cameralook.Z,
-                    0,
-                    -cameralook.X
-                )
-            end
-
-            if direction ~= Vector3.zero then
-                direction = direction.Unit
-            end
-
-            freecamoffset =
-                freecamoffset + (direction * delta * speed)
-
-            middle.CFrame = pos + freecamoffset
-            middle.AssemblyLinearVelocity = Vector3.zero
-
-        end
-
-    elseif middle then
-
-        freecamoffset = Vector3.zero
-        pos = middle.CFrame
-
+    if UI.FOVCircle then
+        UI.FOVCircle:Set(State.FOVCircle)
     end
 
-end))
+    setQuickState(
+        QuickButtons.FOV,
+        State.FOVCircle
+    )
+end)
 
--- close the exploits scope
-end
+QuickButtons.TGT = createQuickButton("TGT", function()
+    State.AimEnabled = not State.AimEnabled
 
-do
-    local mvb = ATVFlySection
+    if UI.AimEnabled then
+        UI.AimEnabled:Set(State.AimEnabled)
+    end
 
-local carfly_enabled = false
-local speed = 55
-local accel = 100
-local upspeed = 15
+    setQuickState(
+        QuickButtons.TGT,
+        State.AimEnabled
+    )
+end)
 
--- Toggle carfly_enabled agora criado nativamente via MiscTab:CreateToggle
-MiscTab:CreateToggle({
-    Name = "car fly enabled",
-    CurrentValue = false,
-    Flag = "car_fly_enabled",
-    Callback = function(first)
-        carfly_enabled = first
-    end,
+QuickButtons.UI = createQuickButton("UI", function()
+    Window:ToggleHide()
+end)
+
+-- ================================================================
+-- COMBAT TAB
+-- ================================================================
+
+local Combat = Window:CreateTab({
+    name = "Combat",
+    icon = "crosshair",
 })
 
--- old adapter call removed: mvb:AddToggle("carfly_enabled", ...
--- (anteriormente via adapter mvb:AddToggle).
+Combat:CreateSection({
+    name = "Aim",
+})
 
+UI.AimMode = Combat:CreateDropdown({
+    name = "Aim Mode",
+    description = "Escolha o modo de mira. Aimbot é a assistência de câmera; o adapter de Trident apenas verifica compatibilidade.",
+    options = {
+        "Off",
+        "Aimbot",
+        "Silent Aim (Trident)",
+    },
+    value = "Off",
+    flag = "AimMode",
+    callback = function(value)
+        State.AimMode = value
 
-mvb:AddLabel("hold V to go up")
-mvb:AddLabel("hold B to go down")
+        if value == "Silent Aim (Trident)" then
+            local supported, message = checkTridentAdapter()
 
-local car, dist = nil, 50
-
-local findcar = function()
-    car = nil
-    dist = 50
-
-    for i, v in pairs(workspace:GetChildren()) do
-        if v:FindFirstChild("Seat") and v:FindFirstChild("Frame") and trident.middlepart then
-            local distance = (v.Frame.Position - trident.middlepart.Position).Magnitude
-
-            if distance < dist then
-                car = v
-                dist = distance
-            end
-        end
-    end
-end
-
-findcar()
-
-local buildup = 0
-local lastdir = _Vector3new(1, 0, 0)
-
-cheat.utility.new_renderstepped(
-    LPH_JIT_MAX(function(delta)
-        if carfly_enabled and car and car:FindFirstChild("Frame")
-            and (car.Frame.CFrame.p - Camera.CFrame.p).Magnitude <= 50 then
-
-            local cameralook = Camera.CFrame.LookVector
-            cameralook = _Vector3new(cameralook.X, 0, cameralook.Z)
-
-            local direction = Vector3.zero
-
-            direction =
-                _IsKeyDown(UserInputService, Enum.KeyCode.W)
-                and direction + cameralook
-                or direction
-
-            direction =
-                _IsKeyDown(UserInputService, Enum.KeyCode.S)
-                and direction - cameralook
-                or direction
-
-            direction =
-                _IsKeyDown(UserInputService, Enum.KeyCode.D)
-                and direction + _Vector3new(-cameralook.Z, 0, cameralook.X)
-                or direction
-
-            direction =
-                _IsKeyDown(UserInputService, Enum.KeyCode.A)
-                and direction + _Vector3new(cameralook.Z, 0, -cameralook.X)
-                or direction
-
-            direction =
-                _IsKeyDown(UserInputService, Enum.KeyCode.V)
-                and direction + Vector3.yAxis
-                or direction
-
-            direction =
-                _IsKeyDown(UserInputService, Enum.KeyCode.B)
-                and direction - Vector3.yAxis
-                or direction
-
-            if direction ~= Vector3.zero then
-                direction = direction.Unit
-
-                if direction ~= Vector3.yAxis and -direction ~= Vector3.yAxis then
-
-                    buildup = math.clamp(
-                        buildup + delta * accel,
-                        0,
-                        speed
-                    )
-
-                    lastdir = direction
-                end
+            if not supported then
+                notify("Trident Adapter", message)
+                State.AimMode = "Off"
+                UI.AimMode:Set("Off")
             else
-                direction = lastdir
-
-                buildup = math.clamp(
-                    buildup - delta * 150,
-                    0,
-                    speed
-                )
+                notify("Trident Adapter", message)
             end
-
-            for i, v in pairs(car:GetChildren()) do
-                v.AssemblyLinearVelocity = _Vector3new(
-                    direction.X * buildup,
-                    direction.Y * upspeed,
-                    direction.Z * buildup
-                )
-            end
-
-        elseif (not car) or (
-            car and car:FindFirstChild("Frame")
-            and (car.Frame.CFrame.p - Camera.CFrame.p).Magnitude > 50
-        ) then
-
-            findcar()
-            buildup = 0
-        else
-            buildup = 0
         end
-    end)
+
+        if value == "Off" then
+            State.AimEnabled = false
+            UI.AimEnabled:Set(false)
+        end
+    end,
+})
+
+UI.AimEnabled = Combat:CreateToggle({
+    name = "Aim Enabled",
+    description = "Liga o modo selecionado.",
+    value = false,
+    flag = "AimEnabled",
+    callback = function(value)
+        State.AimEnabled = value
+    end,
+})
+
+UI.AimSmooth = Combat:CreateSlider({
+    name = "Aim Smooth",
+    description = "Suavidade do Aimbot local.",
+    range = { 1, 20 },
+    increment = 1,
+    value = 8,
+    suffix = "/20",
+    flag = "AimSmooth",
+    callback = function(value)
+        State.AimSmooth = value
+    end,
+})
+
+UI.AimPoint = Combat:CreateDropdown({
+    name = "Aim Point",
+    description = "Head Top mantém a mira na ponta superior da cabeça.",
+    options = {
+        "Head Top",
+        "Head Center",
+        "Body Center",
+    },
+    value = "Head Top",
+    flag = "AimPoint",
+    callback = function(value)
+        State.AimPoint = value
+    end,
+})
+
+UI.HitPart = Combat:CreateDropdown({
+    name = "Hit Part",
+    description = "Parte usada como fallback para seleção de alvo.",
+    options = {
+        "Head",
+        "UpperTorso",
+        "LowerTorso",
+        "HumanoidRootPart",
+        "Torso",
+    },
+    value = "Head",
+    flag = "HitPart",
+    callback = function(value)
+        State.HitPart = value
+    end,
+})
+
+Combat:CreateSection({
+    name = "FOV / Target",
+})
+
+UI.FOVRadius = Combat:CreateSlider({
+    name = "FOV Radius",
+    description = "Raio em pixels ao redor do centro da tela.",
+    range = { 25, 500 },
+    increment = 1,
+    value = 175,
+    suffix = "/500",
+    flag = "FOVRadius",
+    callback = function(value)
+        State.FOVRadius = value
+        updateFOV()
+    end,
+})
+
+UI.FOVCircle = Combat:CreateToggle({
+    name = "FOV Circle",
+    description = "Mostra o círculo exatamente no centro da viewport.",
+    value = true,
+    flag = "FOVCircle",
+    callback = function(value)
+        State.FOVCircle = value
+        updateFOV()
+    end,
+})
+
+UI.TargetSleeping = Combat:CreateToggle({
+    name = "Target Sleeping",
+    description = "Permite personagens detectados como Sleeping/Downed.",
+    value = false,
+    flag = "TargetSleeping",
+    callback = function(value)
+        State.TargetSleeping = value
+    end,
+})
+
+UI.Teammates = Combat:CreateToggle({
+    name = "Teammates",
+    description = "Inclui jogadores do mesmo Team/TeamColor.",
+    value = false,
+    flag = "Teammates",
+    callback = function(value)
+        State.Teammates = value
+    end,
+})
+
+Combat:CreateSection({
+    name = "Trident Adapter",
+})
+
+UI.AdapterStatus = Combat:CreateText({
+    name = "Adapter Status",
+    text = "Verificação ainda não executada.",
+})
+
+Combat:CreateButton({
+    name = "Verify Adapter",
+    description = "Verifica PlaceId e primitivas opcionais sem instalar hook de projétil.",
+    callback = function()
+        local supported, message = checkTridentAdapter()
+
+        UI.AdapterStatus:SetTitle(
+            supported
+                and "Adapter Status · READY"
+                or "Adapter Status · CHECK"
+        )
+
+        UI.AdapterStatus:Set(message)
+
+        notify(
+            supported and "Adapter Ready" or "Adapter Check",
+            message
+        )
+    end,
+})
+
+Combat:CreateButton({
+    name = "Get Current Target",
+    description = "Mostra no console o alvo atual do resolver.",
+    callback = function()
+        local target = getClosestTarget()
+
+        if target then
+            print(
+                "[OverSeek] Target:",
+                target.player.Name,
+                "Distance:",
+                round(target.worldDistance),
+                "FOV:",
+                round(target.screenDistance)
+            )
+
+            notify(
+                "Current Target",
+                string.format(
+                    "%s | %dm",
+                    target.player.Name,
+                    round(target.worldDistance)
+                )
+            )
+        else
+            print("[OverSeek] No target inside FOV.")
+            notify(
+                "Current Target",
+                "Nenhum alvo dentro do FOV."
+            )
+        end
+    end,
+})
+
+Combat:CreateSection({
+    name = "Hitbox Visualizer",
+})
+
+UI.HitboxVisualizer = Combat:CreateToggle({
+    name = "Enabled",
+    description = "Visualiza o tamanho escolhido sem modificar a hitbox do servidor.",
+    value = false,
+    flag = "HitboxVisualizer",
+    callback = function(value)
+        State.HitboxVisualizer = value
+    end,
+})
+
+UI.HitboxPart = Combat:CreateDropdown({
+    name = "Hit Part",
+    options = {
+        "Head",
+        "UpperTorso",
+        "LowerTorso",
+        "HumanoidRootPart",
+        "Torso",
+    },
+    value = "Head",
+    flag = "HitboxPart",
+    callback = function(value)
+        State.HitboxPart = value
+    end,
+})
+
+UI.HitboxX = Combat:CreateSlider({
+    name = "Size X",
+    range = { 1, 10 },
+    increment = 1,
+    value = 5,
+    suffix = "/10",
+    flag = "HitboxX",
+    callback = function(value)
+        State.HitboxX = value
+    end,
+})
+
+UI.HitboxY = Combat:CreateSlider({
+    name = "Size Y",
+    range = { 1, 10 },
+    increment = 1,
+    value = 5,
+    suffix = "/10",
+    flag = "HitboxY",
+    callback = function(value)
+        State.HitboxY = value
+    end,
+})
+
+UI.HitboxZ = Combat:CreateSlider({
+    name = "Size Z",
+    range = { 1, 10 },
+    increment = 1,
+    value = 5,
+    suffix = "/10",
+    flag = "HitboxZ",
+    callback = function(value)
+        State.HitboxZ = value
+    end,
+})
+
+-- ================================================================
+-- VISUAL TAB
+-- ================================================================
+
+local Visual = Window:CreateTab({
+    name = "Visual",
+    icon = "eye",
+})
+
+Visual:CreateSection({
+    name = "ESP",
+})
+
+UI.ESPEnabled = Visual:CreateToggle({
+    name = "ESP Enabled",
+    description = "ESP 2D proporcional ao corpo real do personagem.",
+    value = false,
+    flag = "ESPEnabled",
+    callback = function(value)
+        State.ESPEnabled = value
+    end,
+})
+
+UI.Box = Visual:CreateToggle({
+    name = "Box",
+    description = "Exibe a caixa 2D.",
+    value = true,
+    flag = "Box",
+    callback = function(value)
+        State.Box = value
+    end,
+})
+
+UI.CornerBoxes = Visual:CreateToggle({
+    name = "Corner Boxes",
+    description = "Usa somente os cantos da caixa para um visual mais limpo.",
+    value = true,
+    flag = "CornerBoxes",
+    callback = function(value)
+        State.CornerBoxes = value
+    end,
+})
+
+UI.Outline = Visual:CreateToggle({
+    name = "Outline",
+    description = "Highlight 3D opcional.",
+    value = false,
+    flag = "Outline",
+    callback = function(value)
+        State.Outline = value
+    end,
+})
+
+Visual:CreateSection({
+    name = "Info",
+})
+
+UI.ShowName = Visual:CreateToggle({
+    name = "Show Name",
+    description = "Nome centralizado no topo da caixa.",
+    value = true,
+    flag = "ShowName",
+    callback = function(value)
+        State.ShowName = value
+    end,
+})
+
+UI.ShowDistance = Visual:CreateToggle({
+    name = "Show Distance",
+    description = "Distância em studs arredondados.",
+    value = true,
+    flag = "ShowDistance",
+    callback = function(value)
+        State.ShowDistance = value
+    end,
+})
+
+UI.ShowSleeping = Visual:CreateToggle({
+    name = "Show Sleepers",
+    description = "Mostra SLEEPING quando o personagem expõe essa informação.",
+    value = false,
+    flag = "ShowSleeping",
+    callback = function(value)
+        State.ShowSleeping = value
+    end,
+})
+
+UI.ShowScientists = Visual:CreateToggle({
+    name = "Show Scientists",
+    description = "Inclui NPCs cujo nome/atributo identifica Scientist.",
+    value = false,
+    flag = "ShowScientists",
+    callback = function(value)
+        State.ShowScientists = value
+    end,
+})
+
+UI.ShowGun = Visual:CreateToggle({
+    name = "Show Gun",
+    description = "Mostra o Tool atualmente equipado.",
+    value = false,
+    flag = "ShowGun",
+    callback = function(value)
+        State.ShowGun = value
+    end,
+})
+
+UI.RenderDistance = Visual:CreateSlider({
+    name = "Render Distance",
+    description = "Distância máxima do ESP.",
+    range = { 50, 1500 },
+    increment = 10,
+    value = 1000,
+    suffix = "/1500",
+    flag = "RenderDistance",
+    callback = function(value)
+        State.RenderDistance = value
+    end,
+})
+
+UI.Snapline = Visual:CreateToggle({
+    name = "Snapline",
+    description = "Linha do centro da tela para a posição do jogador.",
+    value = false,
+    flag = "Snapline",
+    callback = function(value)
+        State.Snapline = value
+    end,
+})
+
+-- ================================================================
+-- MISC TAB
+-- ================================================================
+
+local Misc = Window:CreateTab({
+    name = "Misc",
+    icon = "layers",
+})
+
+Misc:CreateSection({
+    name = "Quick Controls",
+})
+
+UI.Notifications = Misc:CreateToggle({
+    name = "Notifications",
+    description = "Ativa notificações curtas.",
+    value = true,
+    flag = "Notifications",
+    callback = function(value)
+        State.Notifications = value
+    end,
+})
+
+UI.QuickBar = Misc:CreateToggle({
+    name = "Quick Bar",
+    description = "Mostra a barra inferior em dispositivos touch.",
+    value = true,
+    flag = "QuickBar",
+    callback = function(value)
+        State.QuickBar = value
+
+        QuickBar.Visible =
+            value
+            and UserInputService.TouchEnabled
+    end,
+})
+
+Misc:CreateKeybind({
+    name = "Toggle UI",
+    description = "Padrão: RightShift.",
+    value = Enum.KeyCode.RightShift,
+    flag = "ToggleUI",
+    isMenuToggle = true,
+    callback = function()
+        Window:ToggleHide()
+    end,
+})
+
+Misc:CreateKeybind({
+    name = "Toggle FOV",
+    description = "Padrão: F4.",
+    value = Enum.KeyCode.F4,
+    flag = "ToggleFOV",
+    callback = function()
+        State.FOVCircle = not State.FOVCircle
+        UI.FOVCircle:Set(State.FOVCircle)
+    end,
+})
+
+Misc:CreateKeybind({
+    name = "Toggle ESP",
+    description = "Padrão: F5.",
+    value = Enum.KeyCode.F5,
+    flag = "ToggleESP",
+    callback = function()
+        State.ESPEnabled = not State.ESPEnabled
+        UI.ESPEnabled:Set(State.ESPEnabled)
+    end,
+})
+
+Misc:CreateButton({
+    name = "Reset Visuals",
+    description = "Desliga ESP, Snapline, FOV e hitbox visualizer.",
+    callback = function()
+        State.ESPEnabled = false
+        State.Snapline = false
+        State.FOVCircle = false
+        State.HitboxVisualizer = false
+
+        UI.ESPEnabled:Set(false)
+        UI.Snapline:Set(false)
+        UI.FOVCircle:Set(false)
+        UI.HitboxVisualizer:Set(false)
+    end,
+})
+
+-- ================================================================
+-- SETTINGS TAB
+-- ================================================================
+
+local Settings = Window:CreateTab({
+    name = "Settings",
+    icon = "settings",
+})
+
+Settings:CreateSection({
+    name = "Configuration",
+})
+
+Settings:CreateButton({
+    name = "Save Configuration",
+    description = "Salva a configuração atual do Rayfield.",
+    callback = function()
+        local ok = Window:Save()
+
+        notify(
+            ok and "Configuration" or "Configuration Error",
+            ok and "Configuração salva." or "Falha ao salvar."
+        )
+    end,
+})
+
+Settings:CreateButton({
+    name = "Load Configuration",
+    description = "Carrega a configuração salva.",
+    callback = function()
+        local ok = Window:Load()
+
+        notify(
+            ok and "Configuration" or "Configuration Error",
+            ok and "Configuração carregada." or "Falha ao carregar."
+        )
+    end,
+})
+
+Settings:CreateButton({
+    name = "Hide UI",
+    description = "Esconde a janela sem desligar as funções.",
+    callback = function()
+        Window:Hide()
+    end,
+})
+
+-- ================================================================
+-- PLAYER / CAMERA LIFECYCLE
+-- ================================================================
+
+connect(
+    Players.PlayerRemoving,
+    function(player)
+        removeESP(player)
+        removeHitboxVisualizer(player)
+    end
 )
 
-end
+connect(
+    Workspace:GetPropertyChangedSignal("CurrentCamera"),
+    function()
+        Camera = Workspace.CurrentCamera or Camera
+        updateFOV()
+    end
+)
 
-do
-    local chatTab = ChatSection
-    local chatMessage = "Hello"
-    local chatEnabled = false
-    local chatInterval = 5
+-- ================================================================
+-- RENDER LOOP
+-- ================================================================
 
--- Chat controls now created nativamente via MiscTab.
-MiscTab:CreateLabel({Name = "Chat controls"})
-MiscTab:CreateToggle({
-    Name = "chat enabled",
-    CurrentValue = false,
-    Flag = "chat_spam_enabled",
-    Callback = function(value)
-        chatEnabled = value
-    end,
-})
+pcall(function()
+    RunService:UnbindFromRenderStep(SCRIPT_RENDER_NAME)
+end)
 
-MiscTab:CreateSlider({
-    Name = "chat spam interval",
-    Range = {1, 60},
-    Increment = 1,
-    CurrentValue = 5,
-    Flag = "chat_spam_interval",
-    Callback = function(value)
-        chatInterval = value
-    end,
-})
-
-task.spawn(function()
-        while task.wait(chatInterval) do
-            if chatEnabled and trident.tcp then
-                pcall(function()
-                    trident.tcp:FireServer(23, chatMessage, "Global")
-                end)
-            end
+RunService:BindToRenderStep(
+    SCRIPT_RENDER_NAME,
+    Enum.RenderPriority.Camera.Value + 1,
+    function(deltaTime)
+        if not Running then
+            return
         end
+
+        Camera = Workspace.CurrentCamera or Camera
+
+        -- FPS
+        FPSAccumulator += deltaTime
+        FPSFrames += 1
+
+        if FPSAccumulator >= 0.5 then
+            CurrentFPS = round(
+                FPSFrames / FPSAccumulator
+            )
+
+            FPSAccumulator = 0
+            FPSFrames = 0
+
+            StatusText.Text = string.format(
+                "  OverSeek.wtf | %d FPS",
+                CurrentFPS
+            )
+        end
+
+        -- Core visuals
+        updateFOV()
+        updateAimbot(deltaTime)
+
+        -- ESP update at ~30 FPS to reduce UI churn.
+        ESPAccumulator += deltaTime
+
+        if ESPAccumulator >= (1 / 30) then
+            ESPAccumulator = 0
+
+            updateESP()
+
+            NPCAccumulator += 1 / 30
+
+            if NPCAccumulator >= 0.10 then
+                NPCAccumulator = 0
+                updateScientistESP()
+            end
+
+            updateHitboxVisualizers()
+        end
+
+        -- Target state
+        if State.AimEnabled and State.AimMode ~= "Off" then
+            local target = getClosestTarget()
+
+            if target then
+                TargetStatus.Text = string.format(
+                    "%s: %s | %dm | FOV %d",
+                    State.AimMode == "Aimbot"
+                        and "AIM"
+                        or "TARGET",
+                    target.player.Name,
+                    round(target.worldDistance),
+                    round(target.screenDistance)
+                )
+
+                TargetStatus.Visible = true
+            else
+                TargetStatus.Text = "TARGET: NONE"
+                TargetStatus.Visible = true
+            end
+        else
+            TargetStatus.Text = ""
+            TargetStatus.Visible = false
+        end
+
+        -- Quick buttons
+        setQuickState(
+            QuickButtons.AIM,
+            State.AimEnabled
+            and State.AimMode == "Aimbot"
+        )
+
+        setQuickState(
+            QuickButtons.ESP,
+            State.ESPEnabled
+        )
+
+        setQuickState(
+            QuickButtons.FOV,
+            State.FOVCircle
+        )
+
+        setQuickState(
+            QuickButtons.TGT,
+            State.AimEnabled
+        )
+    end
+)
+
+-- ================================================================
+-- INITIAL STATE
+-- ================================================================
+
+updateFOV()
+
+local supported, adapterMessage = checkTridentAdapter()
+
+UI.AdapterStatus:SetTitle(
+    supported
+        and "Adapter Status · READY"
+        or "Adapter Status · CHECK"
+)
+
+UI.AdapterStatus:Set(adapterMessage)
+
+notify(
+    "OverSeek.wtf",
+    "Interface carregada sem nested groups; ESP/FOV foram reorganizados."
+)
+
+-- ================================================================
+-- CLEANUP
+-- ================================================================
+
+local function cleanup()
+    if not Running then
+        return
+    end
+
+    Running = false
+
+    pcall(function()
+        RunService:UnbindFromRenderStep(
+            SCRIPT_RENDER_NAME
+        )
     end)
+
+    disconnectAll()
+
+    for player in pairs(ESP) do
+        removeESP(player)
+    end
+
+    for player in pairs(HitboxVisuals) do
+        removeHitboxVisualizer(player)
+    end
+
+    for model in pairs(NPCESP) do
+        removeNPCESP(model)
+    end
+
+    pcall(function()
+        Overlay:Destroy()
+    end)
+
+    pcall(function()
+        QuickBarGui:Destroy()
+    end)
+
+    ExportEnvironment.OverSeek_Cleanup = nil
 end
 
-ThemeSection:CreateSection({name = "Interface"})
-ThemeSection:CreateToggle({
-    Name = "show keybinds",
-    CurrentValue = false,
-    Flag = "keybindshoww",
-    Callback = function(first)
-        -- Rayfield Gen2 handles its own mobile/desktop controls.
-    end
-})
+ExportEnvironment.OverSeek_Cleanup = cleanup
 
-ThemeSection:CreateLabel({Text = "Rayfield Gen2 â€¢ PC / Mobile"})
-ThemeSection:CreateLabel({Text = "Use the search, tabs and built-in settings controls."})
-
-pcall(function()
-    -- API Gen2: saving via window (a chamada antiga Rayfield:LoadConfiguration nأ£o existe).
-    if window.Load then window:Load() end
-end)
-
--- Garante que a janela abre visأ­vel na primeira aba.
-pcall(function()
-    if window.Navigate then
-        window:Navigate("Combat")
-    elseif ui.tabs.combat and ui.tabs.combat.Select then
-        ui.tabs.combat:Select()
-    end
-end)
-pcall(function()
-    if window.Show then window:Show() end
-end)
-
-cheat.EspLibrary.load()
-
--- ًں’œًںڑ€ًں’œ Notificaأ§أ£o de sucesso (com contador + diagnأ³stico do smoke test)
-pcall(function()
-    local smokeTxt = "n/a"
-    if UI_DIAG then
-        smokeTxt = UI_DIAG.smoke and "OK" or ("FALHOU: " .. tostring(UI_DIAG.smokeErr))
-    end
-    window:Notify({
-        title = "SwimHub ًں’œًںڑ€ًں’œ",
-        content = ("Funcionando! ًں’œًںڑ€ًں’œ (%d elementos | smoke: %s)"):format(UI_CREATED.count, smokeTxt),
-    })
-end)
-warn(("[SwimHub] ًں’œًںڑ€ًں’œ elementos: %d | smoke: %s | tab: %s"):format(
-    UI_CREATED.count,
-    UI_DIAG and (UI_DIAG.smoke and "OK" or tostring(UI_DIAG.smokeErr)) or "n/a",
-    UI_DIAG and UI_DIAG.tabType or "?"
-))
+-- Combat is intentionally the first tab, so no Navigate() call is necessary.
+-- This avoids invoking extra tab bring-into-view logic during startup.
